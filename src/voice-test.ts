@@ -1,15 +1,13 @@
 // Phase 0: how fast are the voice (Kokoro) and the listening (whisper.cpp) on this Mac?
 // Kokoro speaks a sentence, whisper transcribes that audio, and the transcript must match.
 // Run with `npm run voice`. Needs `brew install whisper-cpp ffmpeg` and the model in models/ (see README).
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { KokoroTTS } from 'kokoro-js';
 import { median } from './timing.ts';
+import { startWhisper } from './whisper.ts';
 
 // small.en measured 269 ms per transcript on this Mac; large-v3-turbo measured 867 ms. English only.
 // Set WHISPER_MODEL to compare another model file.
 const WHISPER_MODEL = process.env.WHISPER_MODEL ?? 'models/ggml-small.en.bin';
-const WHISPER_PORT = 8178;
 const VOICE = 'bm_george';
 const SENTENCES = [
   'Good morning, sir. You have three meetings today.',
@@ -24,8 +22,6 @@ const TRANSCRIPT_BUDGET_MS = 300;
 const ms = (value: number) => `${Math.round(value)} ms`;
 const words = (text: string) => text.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(Boolean).join(' ');
 const verdict = (value: number, budget: number) => (value <= budget ? `within the ${budget} ms budget` : `OVER the ${budget} ms budget`);
-
-if (!existsSync(WHISPER_MODEL)) throw new Error(`Missing ${WHISPER_MODEL}; see the README for the download command`);
 
 // --- Voice ---
 let start = performance.now();
@@ -49,43 +45,18 @@ console.log(`voice      one sentence ready in median ${ms(median(speakMs))}, wor
 console.log(`           generates ${median(speedFactor).toFixed(1)}x faster than it plays\n`);
 
 // --- Listening ---
-// --convert lets the server accept Kokoro's 24 kHz audio (whisper wants 16 kHz); it uses ffmpeg.
-const server = spawn('whisper-server', ['-m', WHISPER_MODEL, '--port', String(WHISPER_PORT), '--convert'], { stdio: 'ignore' });
-const serverExit = new Promise<never>((_, reject) => {
-  server.once('error', (error) => reject(new Error(`whisper-server could not start: ${error.message}`)));
-  server.once('exit', (code) => reject(new Error(`whisper-server stopped early (exit ${code})`)));
-});
-serverExit.catch(() => {}); // only matters while we are waiting on it below
+// convert lets the server accept Kokoro's 24 kHz audio (whisper wants 16 kHz); it uses ffmpeg.
+start = performance.now();
+const whisper = await startWhisper({ model: WHISPER_MODEL, convert: true });
+console.log(`whisper loaded in ${ms(performance.now() - start)}`);
 
 let mismatches = 0;
 try {
-  const url = `http://127.0.0.1:${WHISPER_PORT}`;
-  start = performance.now();
-  const ready = async () => {
-    while (!(await fetch(url).then((response) => response.ok, () => false))) {
-      if (performance.now() - start > 120_000) throw new Error('whisper-server was not ready after 2 minutes');
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-  };
-  await Promise.race([ready(), serverExit]);
-  console.log(`whisper loaded in ${ms(performance.now() - start)}`);
-
-  const transcribe = async (clip: Blob): Promise<string> => {
-    const form = new FormData();
-    form.set('file', clip, 'clip.wav');
-    form.set('response_format', 'json');
-    const response = await fetch(`${url}/inference`, { method: 'POST', body: form });
-    if (!response.ok) throw new Error(`whisper-server answered HTTP ${response.status}`);
-    const body = (await response.json()) as { text?: string; error?: string };
-    if (typeof body.text !== 'string') throw new Error(`whisper-server returned no text: ${body.error ?? 'unknown error'}`);
-    return body.text.trim();
-  };
-
-  await Promise.race([transcribe(clips[0]!), serverExit]); // warm-up
+  await whisper.transcribe(clips[0]!); // warm-up
   const listenMs: number[] = [];
   for (const [index, clip] of clips.entries()) {
     start = performance.now();
-    const heard = await Promise.race([transcribe(clip), serverExit]);
+    const heard = await whisper.transcribe(clip);
     listenMs.push(performance.now() - start);
     if (words(heard) !== words(SENTENCES[index]!)) {
       mismatches++;
@@ -95,8 +66,7 @@ try {
   console.log(`listening  transcript in median ${ms(median(listenMs))}, worst ${ms(Math.max(...listenMs))}  ${verdict(median(listenMs), TRANSCRIPT_BUDGET_MS)}`);
   console.log(`           ${SENTENCES.length - mismatches}/${SENTENCES.length} sentences transcribed word for word`);
 } finally {
-  server.removeAllListeners('exit');
-  server.kill();
+  whisper.stop();
 }
 
 process.exitCode = mismatches > 0 ? 1 : 0;

@@ -13,8 +13,9 @@ const server = createServer(async (req, res) => {
   const key = (req.headers.authorization ?? '').replace('Bearer ', '');
   requests.push({ key, body: JSON.parse(raw) });
 
-  if (key.startsWith('limited') || key.startsWith('revoked')) {
-    res.writeHead(key.startsWith('limited') ? 429 : 401, { 'content-type': 'application/json' });
+  const refusal = key.startsWith('limited') ? 429 : key.startsWith('revoked') ? 401 : key.startsWith('down') ? 502 : 0;
+  if (refusal) {
+    res.writeHead(refusal, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'refused' } }));
     return;
   }
@@ -71,4 +72,14 @@ test('a rejected key is named by position and its value is not leaked', async ()
     return true;
   });
   assert.equal(requests.length, 1, 'a bad key is reported, not silently skipped');
+});
+
+test('a server error is retried on the next key', async () => {
+  const { text } = await ask(['down', 'good']);
+  assert.equal(text, 'Good morning.');
+});
+
+test('a server that stays down fails after three tries', async () => {
+  await assert.rejects(ask(['down-1', 'down-2']), /502/);
+  assert.equal(requests.length, 3);
 });
