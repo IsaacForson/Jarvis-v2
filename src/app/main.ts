@@ -17,7 +17,9 @@ const describe = (message: ToRenderer) =>
   message.type === 'timing'
     ? `timing: transcript ${Math.round(message.transcriptMs)} ms, model's first words ${Math.round(message.firstWordsMs)} ms, first sound ${Math.round(message.firstAudioMs)} ms`
     : message.type === 'awake'
-      ? (message.awake ? 'awake' : 'asleep')
+      ? (message.awake ? `awake (${message.persona})` : 'asleep')
+      : message.type === 'voice'
+        ? `voice: ${message.result}${'score' in message ? ` (match ${message.score.toFixed(2)})` : ''}`
       : message.type === 'heard' || message.type === 'speech' ? `${message.type}: ${message.text}` : 'message' in message ? `${message.type}: ${message.message}` : message.type;
 
 app.whenReady().then(async () => {
@@ -41,9 +43,14 @@ app.whenReady().then(async () => {
   window.webContents.on('console-message', (event) => {
     if (event.level === 'error' || event.level === 'warning') console.log(`[window ${event.level}] ${event.message}`);
   });
-  window.webContents.on('context-menu', () => Menu.buildFromTemplate([{ role: 'quit', label: 'Quit Jarvis' }]).popup());
+  window.webContents.on('context-menu', () =>
+    Menu.buildFromTemplate([
+      { label: 'Forget my voice (answer to anyone)', click: () => engine.postMessage({ type: 'forget-voice' } satisfies ToEngine) },
+      { role: 'quit', label: 'Quit Jarvis' },
+    ]).popup(),
+  );
 
-  const engine = utilityProcess.fork(join(dist, 'engine.js'), [], { env: { ...process.env, JARVIS_ROOT: root }, stdio: 'inherit' });
+  const engine = utilityProcess.fork(join(dist, 'engine.js'), [], { env: { ...process.env, JARVIS_ROOT: root, JARVIS_DATA: app.getPath('userData') }, stdio: 'inherit' });
   let quitting = false;
   let status: ToRenderer | undefined; // ready or fatal, replayed if the window loads after the engine
   const toRenderer = (message: ToRenderer) => {

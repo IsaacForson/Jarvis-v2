@@ -19,7 +19,8 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
     let client = clients.get(index);
     if (!client) {
       // The pool does the retrying, so the client must not retry the same key itself.
-      client = new OpenAI({ apiKey, baseURL, maxRetries: 0, timeout: 30_000 });
+      // A spoken reply cannot wait long: give up on a silent server after 8 s and let the pool try another key.
+      client = new OpenAI({ apiKey, baseURL, maxRetries: 0, timeout: 8_000 });
       clients.set(index, client);
     }
     return client;

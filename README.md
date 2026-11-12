@@ -4,13 +4,18 @@ Personal Mac assistant. The full plan is in `Jarvis Features and Build Spec.pdf`
 
 ## Run Jarvis (phase 1, in progress)
 
-`npm start` opens the orb at the bottom right of the screen. Jarvis starts asleep: say "Hey Jarvis" (or
-"Jarvis, what time is it?") to wake it, then just talk. "Go to sleep, Jarvis" or "Stop listening" sends it back to sleep, and so do two minutes of silence.
+`npm start` opens the orb at the bottom right of the screen. It starts asleep: say "Hey Jarvis" (or
+"Jarvis, what time is it?") to wake the male voice, or "Friday" for the female voice (the orb turns rose), then just talk.
+Saying the other name hands the conversation over. "Go to sleep, Jarvis" or "Stop listening" sends it back to sleep, and so do two minutes of silence.
 Needs the keys in `.env`, `brew install whisper-cpp` and the speech model in `models/` (steps below).
 
 - Ctrl+Option+J turns the microphone off and on.
 - Ctrl+Option+S stops Jarvis talking.
 - Right-click the orb to quit. Drag it to move it.
+
+Voice lock: say "Jarvis, learn my voice" and then three full sentences. After that only your voice is answered.
+"Forget my voice", or the right-click menu, removes the lock. Each check prints its match score in the log;
+the pass mark is `threshold` in `src/voice-lock.ts`.
 
 Orb colours: dim blue is asleep, bright blue is awake or speaking, mint is hearing you, violet is thinking, grey is microphone off, red is an error.
 

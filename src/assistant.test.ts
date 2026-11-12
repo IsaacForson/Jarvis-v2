@@ -2,17 +2,27 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Assistant, type AssistantEvent } from './assistant.ts';
 import type { ChatRequest } from './chat.ts';
+import type { VoiceCheck } from './voice-lock.ts';
 
 const audio = new Float32Array(1);
 
 // An assistant wired to fakes; `replies` are the model's answers in order, each as stream pieces.
 const setup = (
   replies: string[][],
-  overrides: { heard?: string[]; asleep?: boolean; idleSleepMs?: number; onSpeak?: (text: string) => void | Promise<void> } = {},
+  overrides: {
+    heard?: string[];
+    asleep?: boolean;
+    idleSleepMs?: number;
+    voice?: VoiceCheck[];
+    onSpeak?: (text: string) => void | Promise<void>;
+  } = {},
 ) => {
   const events: AssistantEvent[] = [];
   const requests: ChatRequest[] = [];
   const heard = [...(overrides.heard ?? [])];
+  const voices: string[] = [];
+  const lockCalls: string[] = [];
+  const checks = [...(overrides.voice ?? [])];
   const assistant = new Assistant({
     transcribe: async () => heard.shift() ?? 'What time is it?',
     chat: (request) => {
@@ -26,13 +36,19 @@ const setup = (
         }
       })();
     },
-    speak: async (text) => {
+    speak: async (text, voice) => {
+      voices.push(voice);
       await overrides.onSpeak?.(text);
       return { samples: new Float32Array(2), sampleRate: 24000 };
     },
     emit: (event) => events.push(event),
     model: { model: 'fast' },
-    persona: 'Be Jarvis.',
+    personas: { jarvis: { voice: 'george', prompt: 'Be Jarvis.' }, friday: { voice: 'emma', prompt: 'Be Friday.' } },
+    voiceLock: overrides.voice && {
+      check: async () => checks.shift() ?? { result: 'open' },
+      beginEnrolment: () => void lockCalls.push('enrol'),
+      forget: () => void lockCalls.push('forget'),
+    },
     startAwake: !overrides.asleep,
     holdMs: 20,
     idleSleepMs: overrides.idleSleepMs,
@@ -40,8 +56,8 @@ const setup = (
   const summary = () =>
     events
       .filter((e) => e.type !== 'timing')
-      .map((e) => (e.type === 'heard' || e.type === 'speech' ? `${e.type}:${e.text}` : e.type === 'error' ? `error:${e.message}` : e.type === 'awake' ? `awake:${e.awake}` : e.type));
-  return { assistant, events, requests, summary };
+      .map((e) => (e.type === 'heard' || e.type === 'speech' ? `${e.type}:${e.text}` : e.type === 'error' ? `error:${e.message}` : e.type === 'awake' ? `awake:${e.awake}` : e.type === 'voice' ? `voice:${e.result}` : e.type));
+  return { assistant, events, requests, summary, voices, lockCalls };
 };
 
 test('a turn is heard, answered sentence by sentence, then done', async () => {
@@ -203,4 +219,42 @@ test('an answered turn reports its delays', async () => {
   await assistant.hear(audio);
   const timing = events.find((e) => e.type === 'timing');
   assert.ok(timing && timing.firstAudioMs >= timing.firstWordsMs && timing.firstWordsMs >= timing.transcriptMs);
+});
+
+test('saying Friday wakes the female voice with her own character, and Jarvis takes over when named', async () => {
+  const { assistant, summary, requests, voices } = setup([['Here.'], ['Back.']], {
+    asleep: true,
+    heard: ['Friday, are you there?', 'Jarvis, your turn.'],
+  });
+  await assistant.hear(audio);
+  await assistant.hear(audio);
+  assert.deepEqual(voices, ['emma', 'george']);
+  assert.deepEqual(requests.map((r) => r.messages[0]?.content), ['Be Friday.', 'Be Jarvis.']);
+  assert.equal(summary().filter((e) => e === 'awake:true').length, 2, 'the hand-over is announced to the window');
+  assert.equal(requests[1]?.messages.length, 4, 'they share one conversation');
+});
+
+test('a stranger is ignored once a voice is enrolled', async () => {
+  const { assistant, summary, requests } = setup([['Nine.']], { voice: [{ result: 'stranger', score: 0.4 }, { result: 'owner', score: 0.9 }] });
+  await assistant.hear(audio);
+  assert.deepEqual(summary(), ['voice:stranger', 'done']);
+  await assistant.hear(audio);
+  assert.equal(requests.length, 1);
+});
+
+test('"learn my voice" starts enrolment and the samples are not treated as questions', async () => {
+  const { assistant, summary, requests, lockCalls } = setup([['unused']], {
+    heard: ['Learn my voice.', 'The weather is lovely today.', 'I like long walks.', 'Short.', 'And a third sentence here.'],
+    voice: [{ result: 'open' }, { result: 'sample' }, { result: 'sample' }, { result: 'too-short' }, { result: 'enrolled' }],
+  });
+  for (let i = 0; i < 5; i++) await assistant.hear(audio);
+  assert.deepEqual(lockCalls, ['enrol']);
+  assert.equal(requests.length, 0);
+  assert.equal(summary().at(-2), 'speech:Thank you, sir. From now on we answer only to your voice.');
+});
+
+test('"forget my voice" removes the lock', async () => {
+  const { assistant, lockCalls } = setup([['unused']], { heard: ['Forget my voice.'], voice: [{ result: 'owner', score: 0.9 }] });
+  await assistant.hear(audio);
+  assert.deepEqual(lockCalls, ['forget']);
 });

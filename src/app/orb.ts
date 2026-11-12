@@ -11,6 +11,7 @@ const LOOK: Record<OrbState, { rgb: [number, number, number]; spin: number; glow
   muted: { rgb: [140, 150, 160], spin: 0.02, glow: 0.3 },
   error: { rgb: [255, 90, 80], spin: 0.02, glow: 0.6 },
 };
+const FRIDAY_RGB: [number, number, number] = [255, 130, 190];
 const RINGS = [
   { tilt: 0.35, squash: 0.32, radius: 0.36, speed: 1 },
   { tilt: -0.9, squash: 0.45, radius: 0.41, speed: -0.7 },
@@ -18,7 +19,7 @@ const RINGS = [
 ];
 
 /** Draws the orb: a glowing core with three orbiting rings. `level` (0 to 1) is how loud the voice is right now. */
-export function startOrb(canvas: HTMLCanvasElement, read: () => { state: OrbState; level: number }): void {
+export function startOrb(canvas: HTMLCanvasElement, read: () => { state: OrbState; level: number; friday: boolean }): void {
   const context = canvas.getContext('2d')!;
   const scale = window.devicePixelRatio;
   const size = canvas.clientWidth;
@@ -33,11 +34,13 @@ export function startOrb(canvas: HTMLCanvasElement, read: () => { state: OrbStat
   const frame = (now: number) => {
     const seconds = Math.min((now - last) / 1000, 0.1);
     last = now;
-    const { state, level: target } = read();
+    const { state, level: target, friday } = read();
     const look = LOOK[state];
+    // Friday keeps every state's motion and brightness but glows rose instead of blue.
+    const hue = friday && state !== 'muted' && state !== 'error' ? FRIDAY_RGB : look.rgb;
     // Ease towards the target so changes of state and volume glide instead of jumping.
     level += (target - level) * Math.min(1, seconds * 14);
-    rgb = rgb.map((value, index) => value + (look.rgb[index]! - value) * Math.min(1, seconds * 6)) as typeof rgb;
+    rgb = rgb.map((value, index) => value + (hue[index]! - value) * Math.min(1, seconds * 6)) as typeof rgb;
     angle += seconds * look.spin * Math.PI * 2;
     const colour = (alpha: number) => `rgba(${rgb.map(Math.round).join(',')},${alpha})`;
     const breath = 0.5 + 0.5 * Math.sin(now / (state === 'thinking' ? 250 : 1400));

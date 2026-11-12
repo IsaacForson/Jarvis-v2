@@ -9,6 +9,8 @@ export type ToEngine =
   | { type: 'user-speech'; active: boolean }
   /** Development check: the engine speaks a question to itself and answers it. */
   | { type: 'selftest' }
+  /** From the right-click menu: the way back in if the voice lock stops recognising its owner. */
+  | { type: 'forget-voice' }
   | { type: 'shutdown' };
 
 /** Engine or main process to renderer. */
