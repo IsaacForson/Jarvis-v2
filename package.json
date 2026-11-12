@@ -10,9 +10,11 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
-    "speed": "node --env-file=.env src/speed-test.ts"
+    "speed": "node --env-file=.env src/speed-test.ts",
+    "voice": "node src/voice-test.ts"
   },
   "dependencies": {
+    "kokoro-js": "^1.2.1",
     "openai": "^7.55.0"
   },
   "devDependencies": {
