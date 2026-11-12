@@ -2,6 +2,7 @@
 import { MicVAD } from '@ricky0123/vad-web';
 import { type Journal, type Speaker, record } from './journal.ts';
 import type { Bridge, ToRenderer } from './messages.ts';
+import { handControl } from './hands.ts';
 import { type OrbState, startOrb } from './orb.ts';
 
 const jarvis = (window as unknown as { jarvis: Bridge }).jarvis;
@@ -163,8 +164,28 @@ jarvis.onMessage((message: ToRenderer) => {
     case 'toggle-mic':
       void setMuted(!muted);
       break;
+    case 'hand-control':
+      if (message.on) void hands.start();
+      else hands.stop();
+      break;
   }
 });
+
+// --- Hand control: gestures go to the main process, which moves the window and opens the panels. ---
+let handStatus = '';
+const hands = handControl(
+  (gesture) => jarvis.send({ type: 'gesture', gesture }),
+  (status, detail) => {
+    if (status === handStatus && !detail) return;
+    handStatus = status;
+    jarvis.send({ type: 'hand-status', status, ...(detail ? { detail } : {}) });
+    document.body.classList.toggle('holding', status === 'holding');
+    if (status === 'holding') say('Holding: move your hand, open it to let go');
+    else if (status === 'error') say(`Hand control failed: ${detail}`);
+    else if (status === 'starting') say('Hand control starting…');
+    else if (ready && !fatal) say(status === 'watching' || status === 'seen' ? `${RESTING()} · hand control on` : RESTING());
+  },
+);
 
 // --- Microphone: Silero VAD decides when a spoken turn starts and ends. ---
 let vad: MicVAD | undefined;

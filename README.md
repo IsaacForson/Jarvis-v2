@@ -74,6 +74,12 @@ banners (including ones inside frames), saves downloads to Downloads, allows or 
 notification, camera and microphone permissions, and can press buttons in system dialogs. It stops only where you are
 needed: paying, signing in, passwords, captchas and deleting.
 
+Hand control (phase 7): "Jarvis, turn on hand control", Ctrl+Option+H, or "Hand control" in the menu-bar menu switches
+the webcam on; it is off by default and the camera is used only while it is on. Pinch thumb and index finger to grab
+the hologram (the orb glows brighter), move your hand to move it with its panels, and open your hand to let go. Sweep an
+open hand left to open the panels and right to close them. macOS asks once to allow the camera. The hand model
+(`models/hand_landmarker.task`) is downloaded by `npm run build`.
+
 Documents: Jarvis reads Word, RTF, OpenDocument, PDF and text files, edits them in place ("change the price to 650 in
 the quote on my desktop", formatting kept) and writes new ones. Before it overwrites or edits a file, the old version
 goes to the Trash. PDFs are read only.

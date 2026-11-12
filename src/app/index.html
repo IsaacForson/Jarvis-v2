@@ -12,7 +12,9 @@
       body { -webkit-app-region: drag; user-select: none; display: flex; justify-content: flex-end; align-items: flex-end; gap: 12px;
              font: 12px/1.45 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text); }
       #orb-box { width: 240px; display: flex; flex-direction: column; align-items: center; flex: none; }
-      canvas { width: 240px; height: 240px; }
+      canvas { width: 240px; height: 240px; transition: filter 0.15s; }
+      /* Held by a pinch: the orb glows brighter, so the user can see it has been grabbed. */
+      body.holding canvas { filter: drop-shadow(0 0 18px rgba(var(--glow), 0.95)) brightness(1.3); }
       #caption { text-shadow: 0 0 6px #000, 0 0 2px #000; text-align: center; padding: 0 8px; height: 34px; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; }
       button { -webkit-app-region: no-drag; font: inherit; color: var(--dim); background: rgba(6, 18, 26, 0.55); border: 1px solid rgba(var(--glow), 0.35);
                border-radius: 4px; padding: 2px 10px; margin-bottom: 4px; cursor: pointer; letter-spacing: 0.08em; text-transform: uppercase; font-size: 10px; }

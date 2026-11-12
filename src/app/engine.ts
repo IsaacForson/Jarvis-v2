@@ -9,6 +9,7 @@ import { KeyPool, parseKeys } from '../key-pool.ts';
 import { SPOKEN, TIERS } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
 import { createTools } from '../tools/index.ts';
+import type { Tool } from '../tools/types.ts';
 import { factsPrompt, Memory, memoryTools } from '../tools/memory.ts';
 import { exec } from '../tools/exec.ts';
 import { Initiative, type Mail } from '../initiative.ts';
@@ -165,7 +166,17 @@ try {
       }),
     report: (text, note) => initiative.say({ key: `job ${note}`, kind: 'report', text, note }),
   });
-  const tools = [...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() }), ...initiative.tools(), ...tasks.tools()];
+  const handTool: Tool = {
+    name: 'hand_control',
+    description:
+      'Switch hand control on or off. When on, the webcam watches his hand: pinch thumb and finger to grab the hologram and move the hand to move it, open the hand to let go, and sweep an open hand left to open the panels or right to close them.',
+    parameters: { type: 'object', properties: { on: { type: 'boolean' } }, required: ['on'] },
+    run: async (args) => {
+      send({ type: 'hand-control', on: args.on === true });
+      return args.on === true ? 'Hand control is on; the camera is watching for his hand.' : 'Hand control is off; the camera is off.';
+    },
+  };
+  const tools = [handTool, ...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() }), ...initiative.tools(), ...tasks.tools()];
 
   const assistant = new Assistant({
     // What Jarvis said last helps whisper hear the answer to it ("yes, the second one", names it mentioned).
