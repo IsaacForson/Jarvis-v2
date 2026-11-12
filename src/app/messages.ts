@@ -11,6 +11,8 @@ export type ToEngine =
   | { type: 'selftest'; question?: string; /** Spoken back when Jarvis asks a yes-or-no question. */ answer?: string; /** What Jarvis says that the answer goes to; default a yes-or-no question. */ answerTo?: string }
   /** From the right-click menu: the way back in if the voice lock stops recognising its owner. */
   | { type: 'forget-voice' }
+  /** The Mac woke from sleep. */
+  | { type: 'resume' }
   | { type: 'shutdown' };
 
 /** Engine or main process to renderer. */

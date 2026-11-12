@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ChatRequest, ToolCall } from './chat.ts';
-import { jobTool, runJob } from './jobs.ts';
+import { runJob } from './jobs.ts';
 import type { Tool } from './tools/types.ts';
 
 const ran: string[] = [];
@@ -28,7 +28,7 @@ const call = (name: string, args: object, id: string): ToolCall => ({ id, name, 
 test('a job uses tools round by round and returns its spoken summary; deleting is never done unasked', async () => {
   ran.length = 0;
   const { chat, requests } = model([[call('web_search', { query: 'flights' }, 'a'), call('move_to_trash', {}, 'b')], [call('send_form', {}, 'c')]], 'The cheapest flight is 400 dollars.');
-  const summary = await runJob('Find flights', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: true, report: () => {} });
+  const summary = await runJob('Find flights', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: true });
   assert.equal(summary, 'The cheapest flight is 400 dollars.');
   assert.deepEqual(ran, ['search flights', 'sent'], 'autonomous: the form is sent, the file is not trashed');
   const results = requests[1]!.messages.filter((message) => message.role === 'tool').map((message) => String(message.content));
@@ -39,20 +39,6 @@ test('a job uses tools round by round and returns its spoken summary; deleting i
 test('without autonomy, anything that needs a yes is left for him', async () => {
   ran.length = 0;
   const { chat } = model([[call('send_form', {}, 'a')]], 'I left the form for you.');
-  await runJob('Fill the form', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: false, report: () => {} });
+  await runJob('Fill the form', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: false });
   assert.deepEqual(ran, []);
-});
-
-test('the tool returns at once, and the outcome is reported when the job ends', async () => {
-  const { chat } = model([], 'All done.');
-  const reports: string[] = [];
-  const tool = jobTool({ chat, model: { model: 'deep' }, tools: () => tools, autonomous: true, report: (text) => reports.push(text) });
-  assert.match(await tool.run({ task: 'Research tea' }), /Background task 1 started/);
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.deepEqual(reports, ['Sir, the background task is done. All done.']);
-
-  const broken = jobTool({ chat: () => { throw new Error('model offline'); }, model: { model: 'deep' }, tools: () => tools, autonomous: true, report: (text) => reports.push(text) });
-  await broken.run({ task: 'x' });
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(reports.at(-1), 'Sir, the background task failed: model offline.');
 });

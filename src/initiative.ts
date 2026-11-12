@@ -3,7 +3,7 @@ import type { CalendarEvent } from './tools/calendar.ts';
 import { integer, text, type Tool } from './tools/types.ts';
 
 export type Mail = { id: number; from: string; subject: string; received: string };
-type Reminder = { id: number; base: number; due: number; text: string; alarm: number; daily: number; level: number; fired: number };
+type Reminder = { id: number; base: number; due: number; text: string; alarm: number; daily: number; level: number; fired: number; mail: number };
 /** Something to say unasked. Alarms and late-night nudges are said in quiet hours; the rest waits or is dropped. */
 type Item = { key: string; text: string; note?: string; kind: 'alarm' | 'late' | 'report' | 'urgent' | 'event' | 'nudge'; spoken?: () => void };
 
@@ -15,6 +15,8 @@ export type InitiativeDeps = {
   initiate(instruction: string): Promise<boolean>;
   unreadMail?(): Promise<Mail[]>;
   isUrgent?(mail: Mail): Promise<boolean>;
+  /** Failed builds and deployments in his code repositories. */
+  failures?(): Promise<{ id: string; text: string; at: number }[]>;
   /** Events from now on, today. */
   upcoming?(): Promise<CalendarEvent[]>;
   /** Seconds since the keyboard or mouse was last used. */
@@ -29,14 +31,14 @@ const QUIET_FROM = 23; // hours, local time
 const QUIET_TO = 7;
 const MAIL_EVERY = 5 * MINUTE;
 const MAIL_FRESH = 2 * 60 * MINUTE;
+/** How long an urgent email may wait for a reply before he is reminded of it. */
+const MAIL_FOLLOW_UP = 2 * 60 * MINUTE;
 const EVENT_WARNING = 10 * MINUTE;
 const AWAY = 5 * 60; // seconds idle that count as a break
 const STRETCH = 90 * MINUTE;
 /** Gaps between repeats of an unanswered reminder: firmer and sooner each time, then hourly. */
 const CHASE = [30, 15, 10, 5].map((minutes) => minutes * MINUTE);
 const ALARM_REPEATS = 15;
-/** A briefing missed by more than this (the Mac was asleep, say) is skipped for the day. */
-const BRIEFING_LATE = 4 * 60 * MINUTE;
 const BRIEFING = (reminders: string) =>
   `Give him his morning briefing now: greet him, then today's calendar, his unread email (say which look important, and mention any that have waited more than a day for him), the weather, and his reminders for today. Use your tools for the calendar, the email and the weather. His reminders and alarms for today: ${reminders}. Keep it to a few spoken sentences.`;
 
@@ -57,9 +59,8 @@ export function chase(reminder: Pick<Reminder, 'text' | 'level' | 'alarm'>, now:
 }
 
 /**
- * Jarvis's initiative: reminders and alarms, the morning briefing, watching email and the calendar,
+ * Jarvis's initiative: reminders and alarms, the morning briefing, watching email, deployments and the calendar,
  * and wellbeing nudges. `tick` runs every half minute; quiet hours (23:00 to 07:00) hold everything but alarms.
- * shortcut: deploys are not watched; there is no deploy source on this Mac yet.
  */
 export class Initiative {
   readonly #deps: InitiativeDeps;
@@ -68,6 +69,9 @@ export class Initiative {
   #queue: Item[] = [];
   #ticking = false;
   #mailCheckedAt = 0;
+  #deploysCheckedAt = 0;
+  /** The unread email as of the last look, to tell when a followed-up email has been dealt with. */
+  #unread: Set<number> | undefined;
   #warned = new Set<string>();
   #activeSince: number | undefined;
   #lastNudge = 0;
@@ -79,6 +83,10 @@ export class Initiative {
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY, base INTEGER NOT NULL, due INTEGER NOT NULL, text TEXT NOT NULL, alarm INTEGER NOT NULL, daily INTEGER NOT NULL, level INTEGER NOT NULL DEFAULT 0, fired INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+    // Added later: the email a follow-up reminder is about (0 for none).
+    if (!(this.#db.prepare('PRAGMA table_info(reminders)').all() as { name: string }[]).some((column) => column.name === 'mail')) {
+      this.#db.exec('ALTER TABLE reminders ADD COLUMN mail INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   #get(key: string): string | undefined {
@@ -114,8 +122,10 @@ export class Initiative {
     this.#ticking = true;
     try {
       const now = this.#now();
+      const logged = (step: Promise<void>) => step.catch((error: unknown) => console.error('[jarvis] initiative:', error instanceof Error ? error.message : error));
+      await logged(this.#mail(now)); // first, so a followed-up email that has since been read is not chased
       this.#reminders(now);
-      await Promise.all([this.#brief(now), this.#mail(now), this.#calendar(now), this.#wellbeing(now)].map((step) => step.catch((error: unknown) => console.error('[jarvis] initiative:', error instanceof Error ? error.message : error))));
+      await Promise.all([this.#brief(now), this.#deploys(now), this.#calendar(now), this.#wellbeing(now)].map(logged));
       await this.#deliver();
     } finally {
       this.#ticking = false;
@@ -125,6 +135,10 @@ export class Initiative {
   #reminders(now: Date): void {
     const due = this.#db.prepare('SELECT * FROM reminders WHERE due <= ? ORDER BY due').all(now.getTime()) as Reminder[];
     for (const reminder of due) {
+      if (reminder.mail && this.#unread && !this.#unread.has(reminder.mail)) {
+        this.#finish(reminder, now.getTime()); // he has read the email: no need to chase it
+        continue;
+      }
       if (isQuiet(now) && !reminder.alarm) {
         // Overnight only alarms speak; a reminder waits for the morning.
         const morning = new Date(now.getFullYear(), now.getMonth(), now.getDate() + (now.getHours() >= QUIET_FROM ? 1 : 0), QUIET_TO);
@@ -149,7 +163,8 @@ export class Initiative {
   async #brief(now: Date): Promise<void> {
     const [hours, minutes] = (this.#deps.briefingAt ?? '08:00').split(':').map(Number);
     const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
-    if (isQuiet(now) || now < at || now.getTime() - at.getTime() > BRIEFING_LATE || this.#get('briefed') === localDay(now)) return;
+    // A briefing missed while the Mac slept is given when it is back, any time before quiet hours.
+    if (isQuiet(now) || now < at || this.#get('briefed') === localDay(now)) return;
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
     const today = (this.#db.prepare('SELECT * FROM reminders WHERE due < ? ORDER BY due').all(end) as Reminder[]).map((one) => `${clock.format(one.due)} ${one.alarm ? 'alarm: ' : ''}${one.text}`);
     if (await this.#deps.initiate(BRIEFING(today.join('; ') || 'none'))) this.#set('briefed', localDay(now));
@@ -160,16 +175,35 @@ export class Initiative {
     if (!unreadMail || !isUrgent || now.getTime() - this.#mailCheckedAt < MAIL_EVERY) return;
     this.#mailCheckedAt = now.getTime();
     const seen = new Set<number>(JSON.parse(this.#get('mailSeen') ?? '[]') as number[]);
-    const fresh = (await unreadMail()).filter((mail) => !seen.has(mail.id));
+    const unread = await unreadMail();
+    this.#unread = new Set(unread.map((mail) => mail.id));
+    const fresh = unread.filter((mail) => !seen.has(mail.id));
     for (const mail of fresh) {
       seen.add(mail.id);
       // Only mail from the last two hours is news worth interrupting for; older mail is for the briefing.
       if (now.getTime() - new Date(mail.received).getTime() > MAIL_FRESH) continue;
       if (!isQuiet(now) && (await isUrgent(mail))) {
         this.say({ key: `mail ${mail.id}`, kind: 'urgent', text: `Sir, an urgent email from ${sender(mail.from)}: ${mail.subject}.`, note: `It is email id ${mail.id}; read_email can open it.` });
+        // Followed up, firmer each time, until it is read or he says it is handled.
+        const due = now.getTime() + MAIL_FOLLOW_UP;
+        this.#db
+          .prepare('INSERT INTO reminders (base, due, text, alarm, daily, mail) VALUES (?, ?, ?, 0, 0, ?)')
+          .run(due, due, `reply to ${sender(mail.from)} about "${mail.subject}"`, mail.id);
       }
     }
     this.#set('mailSeen', JSON.stringify([...seen].slice(-500)));
+  }
+
+  async #deploys(now: Date): Promise<void> {
+    if (!this.#deps.failures || now.getTime() - this.#deploysCheckedAt < MAIL_EVERY) return;
+    this.#deploysCheckedAt = now.getTime();
+    const seen = new Set<string>(JSON.parse(this.#get('deploysSeen') ?? '[]') as string[]);
+    for (const failure of await this.#deps.failures()) {
+      if (seen.has(failure.id)) continue;
+      seen.add(failure.id);
+      if (now.getTime() - failure.at <= MAIL_FRESH) this.say({ key: failure.id, kind: 'urgent', text: `Sir, ${failure.text}.` });
+    }
+    this.#set('deploysSeen', JSON.stringify([...seen].slice(-500)));
   }
 
   async #calendar(now: Date): Promise<void> {
@@ -214,6 +248,15 @@ export class Initiative {
       this.#queue = this.#queue.filter((queued) => queued !== item);
       item.spoken?.();
     }
+  }
+
+  /** When reminders, alarms and the next briefing are due, for waking the Mac in time. */
+  nextTimes(): number[] {
+    const now = this.#now();
+    const [hours, minutes] = (this.#deps.briefingAt ?? '08:00').split(':').map(Number);
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+    const briefing = today > now && this.#get('briefed') !== localDay(now) ? today : new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, hours, minutes);
+    return [...(this.#db.prepare('SELECT due FROM reminders').all() as { due: number }[]).map((row) => row.due), briefing.getTime()];
   }
 
   tools(): Tool[] {

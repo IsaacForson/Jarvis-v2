@@ -1,6 +1,6 @@
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { exec } from './exec.ts';
 import { clip, text, type Tool } from './types.ts';
 
@@ -35,7 +35,46 @@ export async function safePath(input: string, home: string = homedir()): Promise
 
 const friendly = (path: string, home: string) => (path.startsWith(home) ? `~${path.slice(home.length)}` : path);
 
-export function fileTools(home: string = homedir()): Tool[] {
+/** Word and other rich documents, which macOS's textutil reads and writes. */
+const RICH = new Set(['.docx', '.doc', '.rtf', '.odt', '.html', '.htm', '.webarchive', '.wordml']);
+const isRich = (path: string) => RICH.has(extname(path).toLowerCase());
+const format = (path: string) => extname(path).slice(1).toLowerCase().replace(/^htm$/, 'html');
+
+/** Writes a rich document from HTML (or plain text), in the format its name asks for. */
+async function writeRich(path: string, content: string): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-doc-'));
+  try {
+    const html = /^\s*</.test(content) ? content : `<html><body>${content.split(/\n{2,}/).map((part) => `<p>${part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>')}</p>`).join('')}</body></html>`;
+    const source = join(dir, 'source.html');
+    await writeFile(source, html);
+    await exec('textutil', ['-convert', format(path), '-format', 'html', source, '-output', path]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Puts a copy of a file about to be overwritten in the Trash, so the edit can be undone. */
+async function keepOldVersion(path: string, trash: (path: string) => Promise<unknown>): Promise<boolean> {
+  try {
+    await stat(path);
+  } catch {
+    return false; // a new file: nothing to keep
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'jarvis-old-'));
+  const stamp = new Date().toTimeString().slice(0, 5).replace(':', '.');
+  const copy = join(dir, `${basename(path, extname(path))} (before Jarvis edit ${stamp})${extname(path)}`);
+  await copyFile(path, copy);
+  await trash(copy);
+  await rm(dir, { recursive: true, force: true });
+  return true;
+}
+
+/** `pdfText` turns a PDF into its text (the native helper does it). */
+export function fileTools(
+  home: string = homedir(),
+  pdfText?: (path: string) => Promise<string>,
+  trash: (path: string) => Promise<unknown> = (path) => exec('/usr/bin/trash', [path]),
+): Tool[] {
   return [
     {
       name: 'find_files',
@@ -58,10 +97,16 @@ export function fileTools(home: string = homedir()): Tool[] {
     },
     {
       name: 'read_file',
-      description: 'Read a text file (notes, code, CSV, markdown). Not for images, PDFs or other binary files.',
-      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      description:
+        'Read a document or text file: Word (.docx, .doc), RTF, OpenDocument, web pages, PDF, and plain text such as notes, code, CSV or markdown. Set html to get a Word or RTF document with its formatting, for editing.',
+      parameters: { type: 'object', properties: { path: { type: 'string' }, html: { type: 'boolean', description: 'Word or RTF documents only: read as HTML, keeping bold, headings and lists' } }, required: ['path'] },
       run: async (args) => {
         const path = await safePath(text(args, 'path'), home);
+        if (extname(path).toLowerCase() === '.pdf') {
+          if (!pdfText) throw new Error('PDFs cannot be read here');
+          return clip((await pdfText(path)).replace(/\n{3,}/g, '\n\n').trim() || 'The PDF has no text; it may be scanned images. Look at it with read_screen instead.', 12_000);
+        }
+        if (isRich(path)) return clip(await exec('textutil', ['-convert', args.html === true ? 'html' : 'txt', '-stdout', path]), 12_000);
         if ((await stat(path)).size > 1_000_000) throw new Error('That file is larger than 1 MB, too big to read aloud or summarise');
         const content = await readFile(path, 'utf8');
         if (content.includes('\0')) throw new Error('That is not a text file');
@@ -70,15 +115,55 @@ export function fileTools(home: string = homedir()): Tool[] {
     },
     {
       name: 'write_file',
-      description: 'Create a text file, or replace an existing one, with the given content. The user is asked to approve.',
+      description:
+        'Create a file, or replace an existing one, with the given content. For a Word (.docx), RTF or OpenDocument file, give the content as HTML (headings, paragraphs, bold, lists) or plain text. Replacing a file puts its old version in the Trash first. The user is asked to approve.',
       parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
       approval: (args) => `save the file ${text(args, 'path')}`,
       run: async (args) => {
         const path = await safePath(text(args, 'path'), home);
         if (typeof args.content !== 'string') throw new Error('"content" must be text');
+        if (extname(path).toLowerCase() === '.pdf') throw new Error('I cannot write PDFs; save it as a Word document instead');
         await mkdir(dirname(path), { recursive: true });
-        await writeFile(path, args.content);
-        return `Saved ${friendly(path, home)}.`;
+        const kept = await keepOldVersion(path, trash);
+        if (isRich(path)) await writeRich(path, args.content);
+        else await writeFile(path, args.content);
+        return `Saved ${friendly(path, home)}.${kept ? ' The old version is in the Trash.' : ''}`;
+      },
+    },
+    {
+      name: 'edit_file',
+      description:
+        'Change part of a document or text file in place: replace exact words with new ones, keeping everything else (and a Word document\'s formatting). Read the file first and copy the words exactly. The old version is put in the Trash first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          find: { type: 'string', description: 'The exact words to replace, as they appear in the file' },
+          replace: { type: 'string', description: 'What to put in their place (empty to remove them)' },
+          all: { type: 'boolean', description: 'Replace every occurrence, not just one' },
+        },
+        required: ['path', 'find', 'replace'],
+      },
+      approval: (args) => `edit the file ${text(args, 'path')}`,
+      run: async (args) => {
+        const path = await safePath(text(args, 'path'), home);
+        const find = text(args, 'find');
+        if (typeof args.replace !== 'string') throw new Error('"replace" must be text');
+        const rich = isRich(path);
+        if (!rich && extname(path).toLowerCase() === '.pdf') throw new Error('I cannot edit PDFs');
+        const escape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const before = rich ? await exec('textutil', ['-convert', 'html', '-stdout', path]) : await readFile(path, 'utf8');
+        // In a rich document the words are looked for as written, then as HTML would write them ("&" as "&amp;").
+        const wanted = rich && !before.includes(find) ? escape(find) : find;
+        const count = before.split(wanted).length - 1;
+        if (count === 0) throw new Error(rich ? 'Those exact words are not in the document; they may be split by formatting. Read it with html set and copy the words exactly, or rewrite it with write_file.' : 'Those exact words are not in the file. Read it and copy them exactly.');
+        if (count > 1 && args.all !== true) throw new Error(`Those words appear ${count} times. Give more of the surrounding words, or set all to replace every one.`);
+        const replacement = rich && wanted !== find ? escape(args.replace) : args.replace;
+        const after = args.all === true ? before.split(wanted).join(replacement) : before.replace(wanted, () => replacement);
+        await keepOldVersion(path, trash);
+        if (rich) await writeRich(path, after);
+        else await writeFile(path, after);
+        return `Changed ${count > 1 && args.all === true ? `${count} places` : 'it'} in ${friendly(path, home)}. The old version is in the Trash.`;
       },
     },
     {
@@ -89,7 +174,7 @@ export function fileTools(home: string = homedir()): Tool[] {
       run: async (args) => {
         const path = await safePath(text(args, 'path'), home);
         if (path === (await realpath(home))) throw new Error('I will not trash the home folder');
-        await exec('/usr/bin/trash', [path]);
+        await trash(path);
         return `Moved ${friendly(path, home)} to the Trash.`;
       },
     },

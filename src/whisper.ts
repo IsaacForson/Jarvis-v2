@@ -3,8 +3,8 @@ import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 
 export type Whisper = {
-  /** Transcribes one WAV clip. */
-  transcribe(wav: Blob): Promise<string>;
+  /** Transcribes one WAV clip. `context` (what was said just before) helps it hear the next words right. */
+  transcribe(wav: Blob, context?: string): Promise<string>;
   stop(): void;
   /** The server's process id, so an owner further up can make sure it dies. */
   pid: number | undefined;
@@ -57,11 +57,12 @@ export async function startWhisper(options: { model: string; convert?: boolean; 
     throw error;
   }
 
-  const transcribe = async (wav: Blob): Promise<string> => {
+  const transcribe = async (wav: Blob, context?: string): Promise<string> => {
     const form = new FormData();
     form.set('file', wav, 'clip.wav');
     form.set('response_format', 'json');
-    if (options.vocabulary) form.set('prompt', options.vocabulary);
+    const prompt = [options.vocabulary, context].filter(Boolean).join(' ');
+    if (prompt) form.set('prompt', prompt);
     const response = await fetch(`${url}/inference`, { method: 'POST', body: form });
     if (!response.ok) throw new Error(`whisper-server answered HTTP ${response.status}`);
     const body = (await response.json()) as { text?: string; error?: string };
@@ -69,5 +70,5 @@ export async function startWhisper(options: { model: string; convert?: boolean; 
     return body.text.trim();
   };
 
-  return { transcribe: (wav) => Promise.race([transcribe(wav), died]), stop, pid: server.pid };
+  return { transcribe: (wav, context) => Promise.race([transcribe(wav, context), died]), stop, pid: server.pid };
 }

@@ -193,8 +193,44 @@ test('reminders get firmer each time they are said', () => {
   assert.equal(chase({ text: 'pay rent', level: 9, alarm: 0 }, now), 'Sir, I must insist: pay rent. Say done, snooze it, or drop it.');
 });
 
-test('a briefing missed by more than four hours is skipped for the day', async () => {
-  const { initiative, briefings } = await setup('2026-11-12T12:31', { briefingAt: '08:30' });
+test('a briefing missed while the Mac slept is given when it is back, but not in quiet hours', async () => {
+  const { initiative, briefings, at } = await setup('2026-11-12T23:10', { briefingAt: '08:30' });
   await initiative.tick();
   assert.equal(briefings.length, 0);
+  at('2026-11-13T15:00');
+  await initiative.tick();
+  assert.equal(briefings.length, 1);
+});
+
+test('the times to wake the Mac for: reminders and the next briefing', async () => {
+  const { tool, initiative } = await setup('2026-11-12T10:00', { briefingAt: '08:00' });
+  await tool('set_reminder').run({ text: 'call Dana', at: '2026-11-12T15:00' });
+  assert.deepEqual(initiative.nextTimes().map((time) => new Date(time).toString()), [new Date('2026-11-12T15:00').toString(), new Date('2026-11-13T08:00').toString()]);
+});
+
+test('a failed build or deployment is spoken about once, if it is recent', async () => {
+  const failures = [
+    { id: 'run 1', text: 'the CI run on shop, branch main, failed', at: new Date('2026-11-12T09:50').getTime() },
+    { id: 'deploy 2', text: 'the production deployment of shop failed', at: new Date('2026-11-10T09:00').getTime() },
+  ];
+  const { initiative, said, at } = await setup('2026-11-12T10:00', { failures: async () => failures });
+  await initiative.tick();
+  at('2026-11-12T10:06');
+  await initiative.tick();
+  assert.deepEqual(said, ['Sir, the CI run on shop, branch main, failed.']);
+});
+
+test('an urgent email is chased until it is read', async () => {
+  let mail: Mail[] = [{ id: 7, from: 'Dana <dana@work.com>', subject: 'Contract today', received: '2026-11-12T09:59:00' }];
+  const { initiative, said, at, tool } = await setup('2026-11-12T10:00', { unreadMail: async () => mail, isUrgent: async () => true });
+  await initiative.tick();
+  assert.match(await tool('reminders').run({}), /12:00: reply to Dana about "Contract today"/);
+  at('2026-11-12T12:00');
+  await initiative.tick();
+  assert.equal(said.at(-1), 'Sir, a reminder: reply to Dana about "Contract today".');
+  mail = []; // he has read it
+  at('2026-11-12T12:30');
+  await initiative.tick();
+  assert.equal(said.length, 2, 'not chased again once read');
+  assert.equal(await tool('reminders').run({}), 'No reminders or alarms are set.');
 });

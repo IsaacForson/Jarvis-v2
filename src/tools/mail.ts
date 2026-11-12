@@ -16,6 +16,10 @@ const BODY = (id: number) => `
   const found = Application('Mail').inbox.messages.whose({ id: ${id} })();
   found.length ? JSON.stringify({ from: found[0].sender(), subject: found[0].subject(), body: found[0].content() }) : 'null';`;
 
+/** The text of one inbox email, or '' if it is gone. Reading it here does not mark it as read. */
+export const mailBody = async (id: number): Promise<string> =>
+  ((JSON.parse(await osascript(BODY(id), { javascript: true })) as { body: string } | null)?.body ?? '').replace(/\s+/g, ' ').trim();
+
 const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 
 /** Newest first, capped, one line each. The id lets the model ask for a message's text. */

@@ -50,9 +50,29 @@ it keeps listening, switch the microphone, and tick "Start at login". It speaks 
 - Urgent new email (judged from sender and subject), and meetings ten minutes before they start.
 - A break after 90 minutes at the Mac without one, and a word if you are still up past midnight.
 - Background tasks ("in the background, compare ..."): the deep model works on it and reports when done.
+- Repeating tasks ("every weekday at 8, go to my LinkedIn and apply to jobs that fit me"): run in the background at
+  that time and reported. For LinkedIn, sign in once in Jarvis's own Chrome window. "What did the job do?" reads the
+  results. Every job is kept on disk: one cut short by a restart starts again, and a run missed while the Mac slept is
+  done when it wakes (up to 12 hours late).
+- Failed GitHub Actions runs and deployments in repositories you pushed to this week (needs `gh` signed in).
+- Urgent emails (judged from sender, subject and the start of the text) are followed up two hours later, and again,
+  firmer each time, until you read them.
 
 Quiet hours are 23:00 to 07:00: only alarms speak, reminders wait for the morning and email waits for the briefing.
-While plugged in, Jarvis keeps the Mac from sleeping so alarms are heard; it cannot wake a Mac that is asleep or shut.
+Jarvis keeps the Mac from going to sleep on its own (the screen can still turn off), so it is always listening. If the
+Mac does sleep (lid closed, or Sleep chosen), it can wake it shortly before each alarm, reminder, briefing and scheduled
+task, after a one-time `npm run allow-wake` (asks for your password once; it permits only `pmset schedule wake`; undo
+with `sudo rm /etc/sudoers.d/jarvis-wake`). A Mac that is shut down, or asleep with the lid closed on battery, stays
+silent until it is woken.
+
+Documents: Jarvis reads Word, RTF, OpenDocument, PDF and text files, edits them in place ("change the price to 650 in
+the quote on my desktop", formatting kept) and writes new ones. Before it overwrites or edits a file, the old version
+goes to the Trash. PDFs are read only.
+
+Hearing: what Jarvis said last is passed to the speech model as context, and the model is told to work out what you
+meant when a word is misheard. The larger speech model (`ggml-large-v3-turbo-q5_0.bin`, download below) hears accents
+and names much better, for about 0.7 s more per sentence; Jarvis uses it when it is in `models/`.
+`JARVIS_WHISPER_MODEL=models/ggml-small.en.bin` in `.env` switches back to the faster small one.
 Started at login, Jarvis runs as "Electron", so Accessibility and Screen Recording must be allowed for Electron too.
 
 Voice lock: say "Jarvis, learn my voice" and then three full sentences. After that only your voice is answered.
@@ -79,6 +99,8 @@ Kokoro speaks five sentences, whisper.cpp transcribes them, and the transcripts 
 1. `brew install whisper-cpp ffmpeg`
 2. Download the speech model (490 MB, English only) into `models/`, which is never committed:
    `curl -L --fail -o models/ggml-small.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin`
+   and, for better hearing (550 MB):
+   `curl -L --fail -o models/ggml-large-v3-turbo-q5_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin`
 3. `npm run voice` (the first run also downloads the Kokoro voice, about 330 MB)
 
 `npm run check` type-checks the code and runs the tests. Needs Node 24 or newer.

@@ -13,7 +13,8 @@
     "speed": "node --env-file=.env src/speed-test.ts",
     "voice": "node src/voice-test.ts",
     "build": "node build.mjs",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "allow-wake": "sh scripts/allow-wake.sh"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

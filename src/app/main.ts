@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, systemPreferences, Tray, utilityProcess } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, screen, systemPreferences, Tray, utilityProcess } from 'electron';
 import { LOGIN_AGENT, setStartAtLogin } from './login.ts';
 import type { ToEngine, ToMain, ToRenderer } from './messages.ts';
 
@@ -52,8 +52,10 @@ app.whenReady().then(async () => {
   });
   // A menu-bar app: no Dock icon, and the orb can be hidden while Jarvis keeps listening.
   app.dock?.hide();
-  // Keeps the Mac awake while plugged in (-s applies on mains power only), so alarms and reminders are heard.
-  const awake = spawn('caffeinate', ['-s', '-w', String(process.pid)], { stdio: 'ignore' });
+  // Keeps the Mac from going to sleep on its own, on battery too (-i), so Jarvis keeps listening with the
+  // screen off. Closing the lid or choosing Sleep still sleeps it; a scheduled wake brings it back.
+  const awake = spawn('caffeinate', ['-i', '-s', '-w', String(process.pid)], { stdio: 'ignore' });
+  powerMonitor.on('resume', () => engine.postMessage({ type: 'resume' } satisfies ToEngine));
   const toggleOrb = () => (window.isVisible() ? window.hide() : window.showInactive());
   const tray = new Tray(nativeImage.createEmpty());
   tray.setTitle('◉');

@@ -1,10 +1,12 @@
 // Jarvis's hands inside other apps, through the macOS accessibility interface.
 // Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE...
 //        | click X Y [right|double] | drag X1 Y1 X2 Y2 | scroll X Y DOWN RIGHT | at X Y | screen
+//        | pdftext FILE
 // Every command before click takes an optional --app NAME.
 // Prints JSON on success; prints a plain sentence to stderr and exits 1 on failure.
 import ApplicationServices
 import Cocoa
+import PDFKit
 
 func fail(_ message: String) -> Never {
   FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
@@ -258,6 +260,13 @@ func chooseMenu(_ app: NSRunningApplication, _ route: [String]) {
   for title in route.dropFirst() { item = named(menuItems(item), title) }
   guard (attribute(item, kAXEnabledAttribute) as? Bool) ?? true else { fail("That menu item is greyed out right now.") }
   guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { fail("That menu item could not be chosen.") }
+}
+
+// Reading a PDF's text needs no accessibility permission, so it is answered before that check.
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "pdftext" {
+  guard let document = PDFDocument(url: URL(fileURLWithPath: CommandLine.arguments[2])) else { fail("That PDF could not be opened.") }
+  print(document.string ?? "")
+  exit(0)
 }
 
 guard AXIsProcessTrusted() else {
