@@ -16,6 +16,8 @@ export type ChatRequest = {
   timeoutMs?: number;
   /** Actions the model may ask for. What it asks for is the stream's return value. */
   tools?: OpenAI.Chat.ChatCompletionTool[];
+  /** 'required' makes the model call a tool instead of answering in words. */
+  toolChoice?: 'required';
 };
 
 /** One action the model asked for; `arguments` is JSON text exactly as the model wrote it. */
@@ -50,7 +52,7 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
             model: candidate.model,
             messages: request.messages,
             max_tokens: request.maxTokens,
-            ...(request.tools?.length ? { tools: request.tools } : {}),
+            ...(request.tools?.length ? { tools: request.tools, ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}) } : {}),
             stream: true,
           },
           { signal: request.signal, ...(request.timeoutMs ? { timeout: request.timeoutMs } : {}) },

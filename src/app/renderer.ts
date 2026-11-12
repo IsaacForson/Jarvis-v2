@@ -179,6 +179,7 @@ const startMicrophone = async () => {
   try {
   vad = await MicVAD.new({
     model: 'v5',
+    startOnLoad: false, // started below, unless the microphone was switched off meanwhile
     // shortcut: assets load straight from node_modules; copy them into the app when it is packaged.
     baseAssetPath: '../node_modules/@ricky0123/vad-web/dist/',
     onnxWASMBasePath: '../node_modules/onnxruntime-web/dist/',

@@ -13,10 +13,12 @@ export const macTools: Tool[] = [
   },
   {
     name: 'open_url',
-    description: 'Open a web address in the default browser.',
+    description:
+      "Show a web page to the user in his own everyday browser, for him to look at. You cannot read or control that page. To read a page or do something on it yourself, use web_open instead.",
     parameters: { type: 'object', properties: { url: { type: 'string', description: 'A full http or https address' } }, required: ['url'] },
     run: async (args) => {
-      const url = new URL(text(args, 'url')); // throws on a malformed address
+      const address = text(args, 'url').trim();
+      const url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(address) ? address : `https://${address}`); // throws on a malformed address
       if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Only http and https addresses can be opened');
       await exec('open', [url.href]);
       return 'Opened.';

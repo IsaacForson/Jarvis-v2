@@ -1,9 +1,15 @@
 // Bundles the app into dist/. Run by `npm start`.
-import { copyFile, mkdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { build } from 'esbuild';
 
 const node = { bundle: true, platform: 'node', packages: 'external', target: 'node22', sourcemap: true };
 await mkdir('dist', { recursive: true });
+
+// The accessibility helper is Swift; recompile it only when its source is newer than the program (about 7 s).
+const modified = async (path) => (await stat(path).catch(() => ({ mtimeMs: 0 }))).mtimeMs;
+if ((await modified('native/ax.swift')) > (await modified('dist/ax'))) execFileSync('swiftc', ['-O', 'native/ax.swift', '-o', 'dist/ax'], { stdio: 'inherit' });
+
 await Promise.all([
   build({ ...node, entryPoints: ['src/app/main.ts', 'src/app/engine.ts'], outdir: 'dist', format: 'esm' }),
   // A sandboxed preload script must be CommonJS.
