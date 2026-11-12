@@ -13,8 +13,9 @@ export const TIERS = {
     extraBody: { chat_template_kwargs: { enable_thinking: false } },
     firstTextBudgetMs: 600,
   },
+  // The spec's pick, nemotron-3-super-120b-a12b, is listed but answers 404 (not deployed) as of 12 Nov 2026.
   medium: {
-    model: 'nvidia/nemotron-3-super-120b-a12b',
+    model: 'nvidia/nemotron-3.5-super-vl-120b-a12b',
     extraBody: { chat_template_kwargs: { enable_thinking: false } },
   },
   // Deep tasks only: thinking on, runs in the background, so it has no spoken-reply budget.
