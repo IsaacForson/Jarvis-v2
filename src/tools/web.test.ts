@@ -32,6 +32,9 @@ test('adding to a cart and cookie banners need no yes; checking out is refused',
   assert.equal(clickRule(item({ kind: 'button', label: 'Add to Cart', submits: true }), url), undefined);
   assert.equal(clickRule(item({ kind: 'button', label: 'Accept all', consent: true }), url), undefined);
   assert.ok(clickRule(item({ kind: 'button', label: 'Proceed to checkout' }), url) instanceof Error);
+  // A checkout link is refused like a button; a headline that mentions buying is just a link.
+  assert.ok(clickRule(item({ kind: 'link', label: 'Buy now' }), url) instanceof Error);
+  assert.equal(clickRule(item({ kind: 'link', label: 'Should you buy the new MacBook this year?' }), url), undefined);
 });
 
 test('typing: secrets are refused, sending a form is asked about, a search is not', () => {

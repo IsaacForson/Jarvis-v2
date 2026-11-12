@@ -25,7 +25,8 @@ if (fakeCamera) {
 }
 
 // One Jarvis at a time: a second launch (say, at login while one is running) just quits.
-if (!selftest && !app.requestSingleInstanceLock()) app.quit();
+const only = selftest || app.requestSingleInstanceLock();
+if (!only) app.quit();
 
 const describe = (message: ToRenderer) =>
   message.type === 'timing'
@@ -39,6 +40,7 @@ const describe = (message: ToRenderer) =>
       : message.type === 'heard' || message.type === 'speech' ? `${message.type}: ${message.text}` : 'message' in message ? `${message.type}: ${message.message}` : message.type;
 
 app.whenReady().then(async () => {
+  if (!only) return;
   if (process.platform === 'darwin') await systemPreferences.askForMediaAccess('microphone');
 
   // Orb only, or orb with the panels to its left. The window is see-through but still catches clicks,
@@ -186,7 +188,7 @@ app.whenReady().then(async () => {
       // The self-test talks to itself; nothing from the real microphone may reach it.
     } else if (message?.type === 'interrupt') engine.postMessage({ type: 'interrupt', byVoice: message.byVoice === true } satisfies ToEngine);
     else if (message?.type === 'user-speech') engine.postMessage({ type: 'user-speech', active: message.active === true } satisfies ToEngine);
-    else if (message?.type === 'utterance' && message.audio instanceof Float32Array) engine.postMessage(message);
+    else if (message?.type === 'utterance' && message.audio instanceof Float32Array) engine.postMessage({ type: 'utterance', audio: message.audio } satisfies ToEngine);
   });
 
   globalShortcut.register('Control+Alt+J', () => toRenderer({ type: 'toggle-mic' }));

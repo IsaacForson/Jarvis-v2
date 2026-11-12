@@ -44,6 +44,11 @@ const BRIEFING = (reminders: string) =>
 
 const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
 const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+/** "HH:MM" as hours and minutes; anything else is 08:00. */
+export const briefingTime = (value?: string): [number, number] => {
+  const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(value?.trim() ?? '');
+  return match ? [Number(match[1]), Number(match[2])] : [8, 0];
+};
 export const isQuiet = (now: Date) => now.getHours() >= QUIET_FROM || now.getHours() < QUIET_TO;
 const sender = (from: string) => from.replace(/\s*<.*>\s*$/, '').replace(/^"|"$/g, '') || from;
 const localDay = (now: Date) => `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
@@ -161,7 +166,7 @@ export class Initiative {
   }
 
   async #brief(now: Date): Promise<void> {
-    const [hours, minutes] = (this.#deps.briefingAt ?? '08:00').split(':').map(Number);
+    const [hours, minutes] = briefingTime(this.#deps.briefingAt);
     const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
     // A briefing missed while the Mac slept is given when it is back, any time before quiet hours.
     if (isQuiet(now) || now < at || this.#get('briefed') === localDay(now)) return;
@@ -182,7 +187,9 @@ export class Initiative {
       seen.add(mail.id);
       // Only mail from the last two hours is news worth interrupting for; older mail is for the briefing.
       if (now.getTime() - new Date(mail.received).getTime() > MAIL_FRESH) continue;
-      if (!isQuiet(now) && (await isUrgent(mail))) {
+      const urgent = !isQuiet(now) && (await isUrgent(mail).catch(() => undefined));
+      if (urgent === undefined && !isQuiet(now)) seen.delete(mail.id); // could not be judged: look again next time
+      if (urgent) {
         this.say({ key: `mail ${mail.id}`, kind: 'urgent', text: `Sir, an urgent email from ${sender(mail.from)}: ${mail.subject}.`, note: `It is email id ${mail.id}; read_email can open it.` });
         // Followed up, firmer each time, until it is read or he says it is handled.
         const due = now.getTime() + MAIL_FOLLOW_UP;
@@ -253,7 +260,7 @@ export class Initiative {
   /** When reminders, alarms and the next briefing are due, for waking the Mac in time. */
   nextTimes(): number[] {
     const now = this.#now();
-    const [hours, minutes] = (this.#deps.briefingAt ?? '08:00').split(':').map(Number);
+    const [hours, minutes] = briefingTime(this.#deps.briefingAt);
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
     const briefing = today > now && this.#get('briefed') !== localDay(now) ? today : new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, hours, minutes);
     return [...(this.#db.prepare('SELECT due FROM reminders').all() as { due: number }[]).map((row) => row.due), briefing.getTime()];

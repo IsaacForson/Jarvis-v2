@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { chase, Initiative, type InitiativeDeps, type Mail } from './initiative.ts';
+import { briefingTime, chase, Initiative, type InitiativeDeps, type Mail } from './initiative.ts';
 
 const dirs: string[] = [];
 after(() => Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }))));
@@ -233,4 +233,30 @@ test('an urgent email is chased until it is read', async () => {
   await initiative.tick();
   assert.equal(said.length, 2, 'not chased again once read');
   assert.equal(await tool('reminders').run({}), 'No reminders or alarms are set.');
+});
+
+test('an email that could not be judged is looked at again, and the others are not announced twice', async () => {
+  const mail: Mail[] = [
+    { id: 1, from: 'Dana <dana@work.com>', subject: 'Urgent: sign today', received: '2026-11-12T09:55:00' },
+    { id: 2, from: 'Sam <sam@work.com>', subject: 'Urgent: call me', received: '2026-11-12T09:56:00' },
+  ];
+  let down = true;
+  const { initiative, said, tool, at } = await setup('2026-11-12T10:00', {
+    unreadMail: async () => mail,
+    isUrgent: async (one) => {
+      if (one.id === 2 && down) throw new Error('model unreachable');
+      return true;
+    },
+  });
+  await initiative.tick();
+  down = false;
+  at('2026-11-12T10:06');
+  await initiative.tick();
+  assert.deepEqual(said, ['Sir, an urgent email from Dana: Urgent: sign today.', 'Sir, an urgent email from Sam: Urgent: call me.']);
+  assert.equal((await tool('reminders').run({})).split('\n').length, 2, 'one follow-up each');
+});
+
+test('a mistyped briefing time means 08:00', () => {
+  assert.deepEqual(briefingTime('7:30'), [7, 30]);
+  for (const bad of [undefined, '', '8am', '25:00', '08:61']) assert.deepEqual(briefingTime(bad), [8, 0]);
 });

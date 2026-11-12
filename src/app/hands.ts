@@ -14,6 +14,8 @@ export function handControl(onGesture: (gesture: Gesture) => void, onStatus: (st
   let timer: ReturnType<typeof setTimeout> | undefined;
   let gestures = new Gestures();
   let holding = false;
+  /** What was asked for last; starting takes a second or two, and it can be switched off meanwhile. */
+  let wanted = false;
 
   const load = async () => {
     const files = await FilesetResolver.forVisionTasks('../node_modules/@mediapipe/tasks-vision/wasm');
@@ -37,6 +39,7 @@ export function handControl(onGesture: (gesture: Gesture) => void, onStatus: (st
   };
 
   const stop = () => {
+    wanted = false;
     clearTimeout(timer);
     timer = undefined;
     stream?.getTracks().forEach((track) => track.stop());
@@ -48,10 +51,15 @@ export function handControl(onGesture: (gesture: Gesture) => void, onStatus: (st
   };
 
   const start = async () => {
-    if (stream) return;
+    if (wanted) return;
+    wanted = true;
     onStatus('starting');
     try {
-      [stream, landmarker] = await Promise.all([navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } }), landmarker ?? load()]);
+      const [camera, model] = await Promise.all([navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } }), landmarker ?? load()]);
+      landmarker = model;
+      // Switched off while the camera was opening: close it again, or it would stay on unseen.
+      if (!wanted) return camera.getTracks().forEach((track) => track.stop());
+      stream = camera;
       video = document.createElement('video');
       video.muted = true;
       video.playsInline = true;
@@ -65,5 +73,5 @@ export function handControl(onGesture: (gesture: Gesture) => void, onStatus: (st
     }
   };
 
-  return { start, stop, get on() { return stream !== undefined; } };
+  return { start, stop };
 }

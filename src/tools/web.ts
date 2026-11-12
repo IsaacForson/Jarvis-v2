@@ -101,6 +101,8 @@ const host = (url: string) => {
 
 /** What to ask before a click, undefined if it is harmless, or an Error if it must never happen. */
 export function clickRule(item: Item, url: string): string | Error | undefined {
+  // Checkout "buttons" are often links. Only short labels count, so a headline that mentions buying still opens.
+  if (item.kind === 'link' && PAYMENT.test(item.label) && item.label.trim().split(/\s+/).length <= 4) return new Error('That leads to paying, which I never do. He must press it himself.');
   if (item.kind === 'link' || item.kind === 'textbox' || item.search || item.consent) return undefined;
   // Filling a cart is undone with one click; only checking out is not.
   if (/^\s*add to (cart|basket|bag|trolley|wish ?list)\b/i.test(item.label)) return undefined;

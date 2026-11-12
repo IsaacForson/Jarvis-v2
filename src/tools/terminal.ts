@@ -5,6 +5,8 @@ import { clip, text, type Tool } from './types.ts';
 // Commands that only look, never change anything. Anything else, or anything using shell syntax
 // (pipes, redirects, chaining, substitution), is confirmed with the user first.
 const READ_ONLY = new Set(['ls', 'pwd', 'date', 'whoami', 'uptime', 'df', 'sw_vers', 'which', 'hostname', 'cal']);
+// Output goes to the model in the cloud. Best effort: a determined command can hide a path, which is why commands are confirmed.
+const SECRETS = /\.env\b|\.ssh\b|\.aws\b|\.gnupg\b|\.netrc\b|\.npmrc\b|Keychains|voiceprint\.json|\.(pem|p12|pfx|keychain(-db)?)\b|\bsecurity\s+(find|dump|export)/i;
 const SHELL_SYNTAX = /[;&|<>`$(){}\\\n]/;
 
 /** Returns what to ask the user before running the command, or undefined if it only looks. */
@@ -26,6 +28,7 @@ export const terminalTools: Tool[] = [
       const command = text(args, 'command');
       // Never administrator rights: there is nobody at a keyboard to type the password, and nothing Jarvis does needs them.
       if (/(^|[\s;&|(])sudo(\s|$)/.test(command)) throw new Error('Administrator (sudo) commands are not allowed');
+      if (SECRETS.test(command)) throw new Error('That command touches keys or passwords, which I may not read');
       return clip((await exec('/bin/zsh', ['-c', command], { cwd: homedir(), timeoutMs: 60_000 })) || 'Done, with no output.', 4000);
     },
   },

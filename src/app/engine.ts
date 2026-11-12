@@ -42,6 +42,8 @@ try {
   const dataDir = process.env.JARVIS_DATA;
   if (!root || !dataDir) throw new Error('JARVIS_ROOT and JARVIS_DATA must be set');
   const pool = new KeyPool(parseKeys(process.env.NVIDIA_API_KEYS));
+  // Every program Jarvis starts (shell commands, scripts, Chrome) inherits this environment; the keys must not be in it.
+  delete process.env.NVIDIA_API_KEYS;
   const SPEAKER_MODEL = 'Xenova/wavlm-base-plus-sv';
   const [tts, whisper, speakerProcessor, speakerModel, embedder] = await Promise.all([
     // fp32 measured 2.5x faster than the smaller q8 build on this Mac (M2 Pro).

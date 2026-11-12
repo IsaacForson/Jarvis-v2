@@ -5,6 +5,7 @@ import { build } from 'esbuild';
 
 const node = { bundle: true, platform: 'node', packages: 'external', target: 'node22', sourcemap: true };
 await mkdir('dist', { recursive: true });
+await mkdir('models', { recursive: true });
 
 // The accessibility helper is Swift; recompile it only when its source is newer than the program (about 7 s).
 const modified = async (path) => (await stat(path).catch(() => ({ mtimeMs: 0 }))).mtimeMs;
