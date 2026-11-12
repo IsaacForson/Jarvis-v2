@@ -1,6 +1,9 @@
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, systemPreferences, utilityProcess } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, systemPreferences, Tray, utilityProcess } from 'electron';
+import { LOGIN_AGENT, setStartAtLogin } from './login.ts';
 import type { ToEngine, ToMain, ToRenderer } from './messages.ts';
 
 const root = app.getAppPath();
@@ -12,6 +15,9 @@ try {
 } catch {
   // No .env: the engine reports the missing keys in the window.
 }
+
+// One Jarvis at a time: a second launch (say, at login while one is running) just quits.
+if (!selftest && !app.requestSingleInstanceLock()) app.quit();
 
 const describe = (message: ToRenderer) =>
   message.type === 'timing'
@@ -41,8 +47,27 @@ app.whenReady().then(async () => {
     hasShadow: false,
     resizable: false,
     alwaysOnTop: true,
-    webPreferences: { preload: join(dist, 'preload.cjs') },
+    // Hidden, the window must keep listening at full speed.
+    webPreferences: { preload: join(dist, 'preload.cjs'), backgroundThrottling: false },
   });
+  // A menu-bar app: no Dock icon, and the orb can be hidden while Jarvis keeps listening.
+  app.dock?.hide();
+  // Keeps the Mac awake while plugged in (-s applies on mains power only), so alarms and reminders are heard.
+  const awake = spawn('caffeinate', ['-s', '-w', String(process.pid)], { stdio: 'ignore' });
+  const toggleOrb = () => (window.isVisible() ? window.hide() : window.showInactive());
+  const tray = new Tray(nativeImage.createEmpty());
+  tray.setTitle('◉');
+  tray.setToolTip('Jarvis');
+  const trayMenu = () =>
+    Menu.buildFromTemplate([
+      { label: window.isVisible() ? 'Hide the orb' : 'Show the orb', click: toggleOrb },
+      { label: 'Microphone on or off', accelerator: 'Control+Alt+J', click: () => toRenderer({ type: 'toggle-mic' }) },
+      { label: 'Start at login', type: 'checkbox', checked: existsSync(LOGIN_AGENT), click: (item) => void setStartAtLogin(item.checked, process.execPath, root) },
+      { type: 'separator' },
+      { role: 'quit', label: 'Quit Jarvis' },
+    ]);
+  tray.on('click', () => tray.popUpContextMenu(trayMenu()));
+  tray.on('right-click', () => tray.popUpContextMenu(trayMenu()));
   window.setAlwaysOnTop(true, 'floating');
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   window.webContents.on('console-message', (event) => {
@@ -61,6 +86,7 @@ app.whenReady().then(async () => {
   window.webContents.on('context-menu', () =>
     Menu.buildFromTemplate([
       { label: panelsOpen ? 'Hide panels' : 'Show panels', click: togglePanels },
+      { label: 'Hide the orb (Jarvis keeps listening; show it from the menu bar)', click: toggleOrb },
       { label: 'Forget my voice (answer to anyone)', click: () => engine.postMessage({ type: 'forget-voice' } satisfies ToEngine) },
       { role: 'quit', label: 'Quit Jarvis' },
     ]).popup(),
@@ -75,13 +101,14 @@ app.whenReady().then(async () => {
   };
 
   let helperPid: number | undefined;
+  let turnsLeft = Number(process.env.JARVIS_SELFTEST_TURNS ?? 1);
   engine.on('message', (message: ToRenderer) => {
     if (message.type === 'helper') return void (helperPid = message.pid);
     console.log(`[jarvis] ${describe(message)}`);
     toRenderer(message);
     // The self-test speaks to itself, so the real microphone is switched off: room noise must not interrupt it.
     if (selftest && message.type === 'ready') toRenderer({ type: 'toggle-mic' });
-    if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest', question: process.env.JARVIS_SELFTEST_ASK, answer: process.env.JARVIS_SELFTEST_ANSWER } satisfies ToEngine);
+    if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest', question: process.env.JARVIS_SELFTEST_ASK, answer: process.env.JARVIS_SELFTEST_ANSWER, answerTo: process.env.JARVIS_SELFTEST_ANSWER_TO } satisfies ToEngine);
     // Self-test captures: the orb mid-sentence, then the open panels. A dark backdrop stands in for the desktop.
     const shot = selftest ? process.env.JARVIS_SELFTEST_SHOT : undefined;
     const capture = async (name: string) => writeFile(`${shot}-${name}.png`, (await window.webContents.capturePage()).toPNG());
@@ -91,7 +118,9 @@ app.whenReady().then(async () => {
       setTimeout(togglePanels, 2500);
       setTimeout(() => void capture('panels'), 4000);
     }
-    if (selftest && (message.type === 'done' || message.type === 'fatal')) setTimeout(() => app.quit(), 6000);
+    // JARVIS_SELFTEST_TURNS: how many turns to wait for, to test something Jarvis says later on its own.
+    if (selftest && message.type === 'done') turnsLeft--;
+    if (selftest && ((message.type === 'done' && turnsLeft <= 0) || message.type === 'fatal')) setTimeout(() => app.quit(), 6000);
   });
   engine.on('exit', (code) => {
     if (!quitting) toRenderer({ type: 'fatal', message: `The speech engine stopped (exit ${code})` });
@@ -120,6 +149,7 @@ app.whenReady().then(async () => {
 
   app.on('will-quit', () => {
     quitting = true;
+    awake.kill();
     globalShortcut.unregisterAll();
     engine.postMessage({ type: 'shutdown' } satisfies ToEngine);
     // The engine may be mid-sentence and never read that message, so stop whisper-server from here too.

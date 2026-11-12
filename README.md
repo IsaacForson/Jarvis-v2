@@ -42,6 +42,19 @@ about yesterday?" searches it by meaning ("my teeth" finds a talk about the dent
 the matching facts and conversation lines, after asking, along with the request to forget and its reply. It all lives in `memory.db` in the app's data folder
 (`~/Library/Application Support/Jarvis`), readable only by you.
 
+Initiative (phase 5): Jarvis lives in the menu bar (the ◉ icon) with no Dock icon. From there you can hide the orb while
+it keeps listening, switch the microphone, and tick "Start at login". It speaks up on its own:
+- Reminders and alarms ("remind me at 3 to call Dana", "wake me at 7 every day"). A reminder repeats, firmer and sooner,
+  until you say it is done, snooze it or drop it; an alarm repeats every minute until you answer.
+- A morning briefing at `JARVIS_BRIEFING_TIME` (default 08:00): calendar, unread email, weather and reminders.
+- Urgent new email (judged from sender and subject), and meetings ten minutes before they start.
+- A break after 90 minutes at the Mac without one, and a word if you are still up past midnight.
+- Background tasks ("in the background, compare ..."): the deep model works on it and reports when done.
+
+Quiet hours are 23:00 to 07:00: only alarms speak, reminders wait for the morning and email waits for the briefing.
+While plugged in, Jarvis keeps the Mac from sleeping so alarms are heard; it cannot wake a Mac that is asleep or shut.
+Started at login, Jarvis runs as "Electron", so Accessibility and Screen Recording must be allowed for Electron too.
+
 Voice lock: say "Jarvis, learn my voice" and then three full sentences. After that only your voice is answered.
 "Forget my voice", or the right-click menu, removes the lock. Each check prints its match score in the log;
 the pass mark is `threshold` in `src/voice-lock.ts`.

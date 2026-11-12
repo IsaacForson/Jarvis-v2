@@ -10,6 +10,9 @@ import { SPOKEN, TIERS } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
 import { createTools } from '../tools/index.ts';
 import { factsPrompt, Memory, memoryTools } from '../tools/memory.ts';
+import { exec } from '../tools/exec.ts';
+import { Initiative, type Mail } from '../initiative.ts';
+import { jobTool } from '../jobs.ts';
 import { VoiceLock } from '../voice-lock.ts';
 import { encodeWav, resample } from '../wav.ts';
 import { startWhisper } from '../whisper.ts';
@@ -17,7 +20,8 @@ import type { ToEngine, ToRenderer } from './messages.ts';
 
 const SPEED = 1.1; // the stock pace sounded slightly slow
 const MIC_RATE = 16_000;
-const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TOOL also when the user tells a lasting fact or preference about himself, the people in his life or his projects, or asks what was said in an earlier conversation, or asks to forget something. Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
+const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TOOL also when the user tells a lasting fact or preference about himself, the people in his life or his projects, or asks what was said in an earlier conversation, or asks to forget something, or wants a reminder or alarm set, changed, snoozed or marked done, or asks about the weather, or replies to a reminder. Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
+const URGENCY = `You sort email for a busy person. Reply with one word. Reply URGENT only if this email needs his attention within hours: a real person waiting on him or asking for something, a deadline today, something broken, a security alert about his own accounts, or an interview or meeting invitation. Reply NOT for newsletters, promotions, marketing, social media, automatic confirmations and status updates (such as "your application was received" or "application update"), and other routine notifications.`;
 const send = (message: ToRenderer) => process.parentPort.postMessage(message);
 
 try {
@@ -101,27 +105,57 @@ try {
   void memory.index(); // lines saved before search by meaning existed, or before a crash
   let speaker = 'jarvis';
   let selftestAnswer: string | undefined;
+  let selftestAnswerTo = /^Shall I/;
+  const autonomous = process.env.JARVIS_AUTONOMOUS === '1';
+  // A one-word answer from the small fast model, for quick yes-or-no judgements.
+  const verdict = async (system: string, question: string) => {
+    let answer = '';
+    const router = SPOKEN[1]!;
+    for await (const piece of chat({ model: router.model, extraBody: router.extraBody, maxTokens: 4, timeoutMs: 2500, messages: [{ role: 'system', content: system }, { role: 'user', content: question }] })) answer += piece;
+    return answer;
+  };
+
+  // The self-test can stand in a pretend inbox, to check that urgent mail is spoken about unasked.
+  const pretendMail = process.env.JARVIS_SELFTEST_MAIL;
+  const initiative = new Initiative({
+    dbPath: memoryFile,
+    announce: (text, note) => assistant.announce(text, note),
+    initiate: (instruction) => assistant.initiate(instruction),
+    unreadMail: pretendMail ? async () => JSON.parse(pretendMail) as Mail[] : hands.unreadMail,
+    isUrgent: async (mail) => /urgent/i.test(await verdict(URGENCY, `From: ${mail.from}\nSubject: ${mail.subject}`)),
+    upcoming: hands.upcoming,
+    idleSeconds: async () => Number(/"HIDIdleTime" = (\d+)/.exec(await exec('ioreg', ['-c', 'IOHIDSystem', '-d', '4']))?.[1] ?? 0) / 1e9,
+    briefingAt: process.env.JARVIS_BRIEFING_TIME,
+  });
+  const tools = [...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() }), ...initiative.tools()];
+  const background = jobTool({
+    chat,
+    // Long jobs can wait for the deep model's thinking; the everyday model stands in if it is down.
+    model: { model: TIERS.hard.model, extraBody: TIERS.hard.extraBody, fallbacks: [TIERS.medium], timeoutMs: 60_000 },
+    tools: () => tools,
+    autonomous,
+    report: (text, note) => initiative.say({ key: `job ${Date.now()}`, kind: 'report', text, note }),
+  });
 
   const assistant = new Assistant({
     transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)])),
     chat,
-    tools: [...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() })],
+    tools: [...tools, background],
     context: () => factsPrompt(memory),
     // The small fast model gives a one-word second opinion on whether a request needs a tool. Tested
     // 12 Nov 2026: 17 of 18 sample requests right in about 0.4 s; the larger models were worse at it.
-    needsTool: async (request, previous) => {
-      let verdict = '';
-      const router = SPOKEN[1]!;
-      for await (const piece of chat({ model: router.model, extraBody: router.extraBody, maxTokens: 4, timeoutMs: 2500, messages: [{ role: 'system', content: ROUTER }, { role: 'user', content: `${previous ? `The assistant just said: "${previous.slice(-300)}"\n` : ''}Request: "${request}"` }] })) verdict += piece;
-      return /tool/i.test(verdict);
-    },
+    needsTool: async (request, previous) => /tool/i.test(await verdict(ROUTER, `${previous ? `The assistant just said: "${previous.slice(-300)}"\n` : ''}Request: "${request}"`)),
     speak,
     emit: (event) => {
       if (event.type === 'awake') speaker = event.persona;
-      if (event.type === 'heard') memory.log('you', event.text, event.turn);
+      if (event.type === 'heard') {
+        memory.log('you', event.text, event.turn);
+        initiative.heard();
+      }
       if (event.type === 'speech') memory.log(speaker, event.text, event.turn);
-      if (event.type === 'speech' && selftestAnswer && /^Shall I/.test(event.text)) {
+      if (event.type === 'speech' && selftestAnswer && selftestAnswerTo.test(event.text)) {
         const answer = selftestAnswer;
+        selftestAnswer = undefined; // answered once
         setTimeout(async () => {
           const reply = await speak(answer);
           void assistant.hear(resample(reply.samples, reply.sampleRate, MIC_RATE));
@@ -133,7 +167,7 @@ try {
     model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: SPOKEN.slice(1), timeoutMs: 4000 },
     personas: PERSONAS,
     voiceLock,
-    autonomous: process.env.JARVIS_AUTONOMOUS === '1',
+    autonomous,
   });
 
   process.parentPort.on('message', async ({ data }: { data: ToEngine }) => {
@@ -143,6 +177,8 @@ try {
     else if (data.type === 'forget-voice') voiceLock.forget();
     else if (data.type === 'selftest') {
       selftestAnswer = data.answer;
+      selftestAnswerTo = new RegExp(data.answerTo ?? '^Shall I');
+      if (data.question === 'none') return; // only Jarvis's own initiative is being tested
       const question = await speak(data.question || 'Jarvis, are you there?');
       void assistant.hear(resample(question.samples, question.sampleRate, MIC_RATE));
     } else if (data.type === 'shutdown') {
@@ -159,6 +195,9 @@ try {
   const readAhead = () => void hands.refresh().catch((error: unknown) => console.error('[jarvis] calendar read-ahead failed:', error instanceof Error ? error.message : error));
   readAhead();
   setInterval(readAhead, 10 * 60_000).unref();
+  const tick = () => void initiative.tick().catch((error: unknown) => console.error('[jarvis] initiative failed:', error instanceof Error ? error.message : error));
+  tick();
+  setInterval(tick, 30_000);
 } catch (error) {
   send({ type: 'fatal', message: error instanceof Error ? error.message : String(error) });
 }

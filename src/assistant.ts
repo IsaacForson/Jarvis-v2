@@ -89,6 +89,7 @@ export class Assistant {
   #holdTimer: ReturnType<typeof setTimeout> | undefined;
   /** Something was forgotten during the turn under way, so it must not be kept either. */
   #forgetting = false;
+  #userSpeaking = false;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(deps: AssistantDeps) {
@@ -116,11 +117,49 @@ export class Assistant {
 
   /** The microphone heard speech start (true) or decided it was only a noise (false). */
   userSpeaking(active: boolean): void {
+    this.#userSpeaking = active;
     clearTimeout(this.#holdTimer);
     if (!active) this.#armHold();
   }
 
+  /** Mid-reply, waiting on a yes or no, or the user is talking: speaking up now would cut across him. */
+  get busy(): boolean {
+    return this.#answering !== undefined || this.#approval !== undefined || this.#carry !== '' || this.#userSpeaking;
+  }
+
+  /**
+   * Speaks up unasked (an alarm, an urgent email, a finished job) and stays awake for the reply.
+   * `note` is kept in the conversation but not spoken, such as which reminder this was. False when busy: try later.
+   */
+  async announce(text: string, note?: string): Promise<boolean> {
+    if (this.busy) return false;
+    const turn = this.#begin();
+    if (!this.#awake) this.#setAwake(true);
+    await this.#run(turn, async () => {
+      const spoken: string[] = [];
+      for await (const sentence of sentences((async function* () { yield text; })())) {
+        if (!(await this.#say(turn, sentence))) break;
+        spoken.push(sentence);
+      }
+      if (!spoken.length) return;
+      const context: Message = { role: 'user', content: `(Nothing was said; you spoke up on your own.${note ? ` ${note}` : ''})` };
+      const said: Message = { role: 'assistant', content: spoken.join(' ') };
+      this.#history = [...this.#history, [context, said]].slice(-MAX_EXCHANGES);
+    });
+    return true;
+  }
+
+  /** Runs a whole turn unasked, from an instruction instead of speech, such as the morning briefing. False when busy. */
+  async initiate(instruction: string): Promise<boolean> {
+    if (this.busy) return false;
+    const turn = this.#begin();
+    if (!this.#awake) this.#setAwake(true);
+    await this.#run(turn, () => this.#answer(turn, `(Nothing was said; this is scheduled.) ${instruction}`));
+    return true;
+  }
+
   async hear(audio: Float32Array): Promise<void> {
+    this.#userSpeaking = false;
     if (this.#approval) return this.#hearAnswer(this.#approval, audio);
     clearTimeout(this.#holdTimer);
     this.#cancel();

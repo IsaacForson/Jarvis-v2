@@ -515,3 +515,27 @@ test('forgetting drops the conversation held in the session, the turn that asked
   await assistant.hear(audio);
   assert.deepEqual(requests.at(-1)?.messages.slice(1), [{ role: 'user', content: 'What time is it?' }]);
 });
+
+test('speaking up unasked wakes Jarvis, is kept for the reply, and waits while busy', async () => {
+  const { assistant, summary, requests } = setup([['Done, I will mark it.']], { asleep: true, heard: ['Jarvis, it is done.'] });
+  assert.equal(await assistant.announce('Sir, a reminder: call Dana.', 'This was reminder 3.'), true);
+  assert.deepEqual(summary(), ['awake:true', 'speech:Sir, a reminder: call Dana.', 'done']);
+  await assistant.hear(audio);
+  assert.deepEqual(requests[0]?.messages.slice(1, 3), [
+    { role: 'user', content: '(Nothing was said; you spoke up on your own. This was reminder 3.)' },
+    { role: 'assistant', content: 'Sir, a reminder: call Dana.' },
+  ]);
+
+  assistant.userSpeaking(true);
+  assert.equal(assistant.busy, true);
+  assert.equal(await assistant.announce('Not now.'), false);
+  assistant.userSpeaking(false);
+  assert.equal(assistant.busy, false);
+});
+
+test('a scheduled turn runs from an instruction, like the morning briefing', async () => {
+  const { assistant, summary, requests } = setup([['Good morning, sir.']], { asleep: true });
+  assert.equal(await assistant.initiate('Give the briefing.'), true);
+  assert.equal(requests[0]?.messages.at(-1)?.content, '(Nothing was said; this is scheduled.) Give the briefing.');
+  assert.deepEqual(summary(), ['awake:true', 'thinking', 'speech:Good morning, sir.', 'done']);
+});

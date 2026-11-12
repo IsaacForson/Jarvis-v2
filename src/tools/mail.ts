@@ -3,6 +3,9 @@ import { clip, integer, type Tool } from './types.ts';
 
 type RawMail = { id: number; from: string; subject: string; received: string };
 
+/** Every unread email in the inbox, as the Mail app reports it. */
+export const unreadMail = async (): Promise<RawMail[]> => JSON.parse(await osascript(UNREAD, { javascript: true })) as RawMail[];
+
 // Runs inside the Mail app; one request per property for the whole unread list.
 const UNREAD = `
   const unread = Application('Mail').inbox.messages.whose({ readStatus: false });
@@ -31,7 +34,7 @@ export const mailTools: Tool[] = [
     slow: true,
     run: async (args) => {
       const limit = integer(args, 'limit', { min: 1, max: 30, fallback: 10 });
-      return describeUnread(JSON.parse(await osascript(UNREAD, { javascript: true })) as RawMail[], limit);
+      return describeUnread(await unreadMail(), limit);
     },
   },
   {
