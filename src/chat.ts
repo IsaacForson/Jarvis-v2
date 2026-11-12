@@ -26,6 +26,7 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
   };
 
   const open = async (request: ChatRequest) => {
+    let serverFailures = 0;
     // Ends when a key answers, or when pool.next() throws because every key is cooling.
     for (;;) {
       const { index, key } = pool.next();
@@ -45,6 +46,9 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
           pool.cooldown(index);
           continue;
         }
+        // NVIDIA's side hiccuped (5xx or a dropped connection): try again, twice at most.
+        const transient = error instanceof OpenAI.InternalServerError || (error instanceof OpenAI.APIConnectionError && !(error instanceof OpenAI.APIUserAbortError));
+        if (transient && !request.signal?.aborted && ++serverFailures <= 2) continue;
         if (error instanceof OpenAI.AuthenticationError || error instanceof OpenAI.PermissionDeniedError) {
           // Name the key by position only; the key itself must never reach a log.
           throw new Error(`API key #${index + 1} was rejected (HTTP ${error.status})`, { cause: error });

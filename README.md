@@ -2,6 +2,20 @@
 
 Personal Mac assistant. The full plan is in `Jarvis Features and Build Spec.pdf`.
 
+## Run Jarvis (phase 1, in progress)
+
+`npm start` opens the orb at the bottom right of the screen. Jarvis starts asleep: say "Hey Jarvis" (or
+"Jarvis, what time is it?") to wake it, then just talk. "Go to sleep, Jarvis" or "Stop listening" sends it back to sleep.
+Needs the keys in `.env`, `brew install whisper-cpp` and the speech model in `models/` (steps below).
+
+- Ctrl+Option+J turns the microphone off and on.
+- Ctrl+Option+S stops Jarvis talking.
+- Right-click the orb to quit. Drag it to move it.
+
+Orb colours: dim blue is asleep, bright blue is awake or speaking, mint is hearing you, violet is thinking, grey is microphone off, red is an error.
+
+`JARVIS_SELFTEST=1 npx electron .` (after `npm run build`) makes Jarvis ask itself a question and answer it, then quit.
+
 ## Phase 0: model speed test
 
 Measures how fast each chosen NVIDIA model starts replying, using the API keys in turn.
