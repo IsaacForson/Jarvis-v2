@@ -6,8 +6,9 @@ import { KokoroTTS } from 'kokoro-js';
 import { Assistant } from '../assistant.ts';
 import { createChat } from '../chat.ts';
 import { KeyPool, parseKeys } from '../key-pool.ts';
-import { SPOKEN } from '../models.ts';
+import { SPOKEN, TIERS } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
+import { createTools } from '../tools/index.ts';
 import { VoiceLock } from '../voice-lock.ts';
 import { encodeWav, resample } from '../wav.ts';
 import { startWhisper } from '../whisper.ts';
@@ -69,9 +70,21 @@ try {
     whisper.transcribe(new Blob([encodeWav(silence, MIC_RATE)])),
   ]);
 
+  const chat = createChat(pool);
+  const hands = createTools({
+    // Screen captures go to the medium model, the one of the chosen models that reads images.
+    describeImage: async (jpegBase64, question) => {
+      let answer = '';
+      const content = [{ type: 'text' as const, text: `${question} Answer in plain sentences.` }, { type: 'image_url' as const, image_url: { url: `data:image/jpeg;base64,${jpegBase64}` } }];
+      for await (const piece of chat({ model: TIERS.medium.model, extraBody: TIERS.medium.extraBody, maxTokens: 500, timeoutMs: 30_000, messages: [{ role: 'user', content }] })) answer += piece;
+      return answer || 'I could not make out the screen.';
+    },
+  });
+
   const assistant = new Assistant({
     transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)])),
-    chat: createChat(pool),
+    chat,
+    tools: hands.tools,
     speak,
     emit: send,
     // A model that has not started answering within 4 s is given up on, and the next one is asked.
@@ -86,7 +99,7 @@ try {
     else if (data.type === 'user-speech') assistant.userSpeaking(data.active);
     else if (data.type === 'forget-voice') voiceLock.forget();
     else if (data.type === 'selftest') {
-      const question = await speak('Jarvis, are you there?');
+      const question = await speak(data.question || 'Jarvis, are you there?');
       void assistant.hear(resample(question.samples, question.sampleRate, MIC_RATE));
     } else if (data.type === 'shutdown') {
       whisper.stop();
@@ -95,6 +108,11 @@ try {
     }
   });
   send({ type: 'ready' });
+
+  // Read slow sources ahead of time (the Calendar app takes up to a minute), now and every ten minutes.
+  const readAhead = () => void hands.refresh().catch((error: unknown) => console.error('[jarvis] calendar read-ahead failed:', error instanceof Error ? error.message : error));
+  readAhead();
+  setInterval(readAhead, 10 * 60_000).unref();
 } catch (error) {
   send({ type: 'fatal', message: error instanceof Error ? error.message : String(error) });
 }

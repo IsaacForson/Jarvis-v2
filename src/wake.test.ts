@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake } from './wake.ts';
+import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake, parseYesNo } from './wake.ts';
 
 test('a name at the start says who is addressed, with or without a greeting', () => {
   assert.deepEqual(parseWake('Hey Jarvis.'), { name: 'jarvis', rest: '' });
@@ -48,4 +48,10 @@ test('mentioning a name in passing is not a hand-over', () => {
   for (const text of ['What is on Friday?', 'I talked to my boss about Jarvis.', 'Remind me to get the report ready so that I can talk to Friday about the budget next week.']) {
     assert.equal(parseHandover(text), undefined, text);
   }
+});
+
+test('yes-or-no answers are understood, with "no" winning when both are said', () => {
+  for (const text of ['Yes.', 'Yeah, go ahead.', 'Sure, do it', 'Okay.', 'Please do.']) assert.equal(parseYesNo(text), true, text);
+  for (const text of ['No.', "Don't.", 'Cancel that', 'Never mind.', 'No, okay, leave it.', 'Yes... no, stop.']) assert.equal(parseYesNo(text), false, text);
+  for (const text of ['What was that?', 'Maybe later', '']) assert.equal(parseYesNo(text), undefined, text);
 });

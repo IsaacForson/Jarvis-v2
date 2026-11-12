@@ -23,7 +23,12 @@ const server = createServer(async (req, res) => {
     return;
   }
   res.writeHead(200, { 'content-type': 'text/event-stream' });
-  for (const delta of [{ role: 'assistant' }, { content: 'Good ' }, { reasoning_content: 'hm' }, { content: 'morning.' }]) {
+  const toolDeltas = [
+    { content: 'On it.' },
+    { tool_calls: [{ index: 0, id: 'call-1', type: 'function', function: { name: 'open_app', arguments: '{"na' } }] },
+    { tool_calls: [{ index: 0, function: { arguments: 'me":"Safari"}' } }, { index: 1, id: 'call-2', type: 'function', function: { name: 'set_volume', arguments: '{}' } }] },
+  ];
+  for (const delta of model === 'acts' ? toolDeltas : [{ role: 'assistant' }, { content: 'Good ' }, { reasoning_content: 'hm' }, { content: 'morning.' }]) {
     res.write(`data: ${JSON.stringify({ id: '1', object: 'chat.completion.chunk', choices: [{ index: 0, delta }] })}\n\n`);
   }
   res.end('data: [DONE]\n\n');
@@ -99,4 +104,20 @@ test('a model that stalls or is missing is replaced by the next one on the list'
   assert.equal(text, 'Good morning.');
   assert.deepEqual(requests.map((r) => r.body.model), ['stalled', 'missing', 'backup']);
   assert.equal(requests[2]?.body.effort, 'low', "the backup model's own settings are sent, not the first model's");
+});
+
+test('tool calls are assembled from their fragments and returned when the stream ends', async () => {
+  requests.length = 0;
+  const chat = createChat(new KeyPool(['good']), baseURL);
+  const tools = [{ type: 'function' as const, function: { name: 'open_app', parameters: { type: 'object' } } }];
+  const stream = chat({ model: 'acts', messages: [{ role: 'user', content: 'open Safari' }], tools });
+  let text = '';
+  let step = await stream.next();
+  for (; !step.done; step = await stream.next()) text += step.value;
+  assert.equal(text, 'On it.');
+  assert.deepEqual(step.value, [
+    { id: 'call-1', name: 'open_app', arguments: '{"name":"Safari"}' },
+    { id: 'call-2', name: 'set_volume', arguments: '{}' },
+  ]);
+  assert.deepEqual(requests[0]?.body.tools, tools);
 });

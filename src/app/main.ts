@@ -20,6 +20,8 @@ const describe = (message: ToRenderer) =>
       ? (message.awake ? `awake (${message.persona})` : 'asleep')
       : message.type === 'voice'
         ? `voice: ${message.result}${'score' in message ? ` (match ${message.score.toFixed(2)})` : ''}`
+        : message.type === 'tool'
+          ? `tool ${message.status}: ${message.detail}`
       : message.type === 'heard' || message.type === 'speech' ? `${message.type}: ${message.text}` : 'message' in message ? `${message.type}: ${message.message}` : message.type;
 
 app.whenReady().then(async () => {
@@ -77,7 +79,9 @@ app.whenReady().then(async () => {
     if (message.type === 'helper') return void (helperPid = message.pid);
     console.log(`[jarvis] ${describe(message)}`);
     toRenderer(message);
-    if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest' } satisfies ToEngine);
+    // The self-test speaks to itself, so the real microphone is switched off: room noise must not interrupt it.
+    if (selftest && message.type === 'ready') toRenderer({ type: 'toggle-mic' });
+    if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest', question: process.env.JARVIS_SELFTEST_ASK } satisfies ToEngine);
     // Self-test captures: the orb mid-sentence, then the open panels. A dark backdrop stands in for the desktop.
     const shot = selftest ? process.env.JARVIS_SELFTEST_SHOT : undefined;
     const capture = async (name: string) => writeFile(`${shot}-${name}.png`, (await window.webContents.capturePage()).toPNG());
