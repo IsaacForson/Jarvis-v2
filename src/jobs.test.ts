@@ -42,3 +42,9 @@ test('without autonomy, anything that needs a yes is left for him', async () => 
   await runJob('Fill the form', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: false });
   assert.deepEqual(ran, []);
 });
+
+test('a long report is boiled down to a few spoken sentences', async () => {
+  const { chat } = model([], `Now I have all the information. Let me summarize:\n- Amazon: $198\n- Best Buy: $198\n${'Details. '.repeat(50)}`);
+  const summary = await runJob('Compare', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: true, summarize: async (answer) => `Both are 198 dollars (${answer.length} characters read).` });
+  assert.match(summary, /^Both are 198 dollars \(\d+ characters read\)\.$/);
+});

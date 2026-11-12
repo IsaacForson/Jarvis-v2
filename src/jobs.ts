@@ -12,12 +12,14 @@ export type JobDeps = {
   tools(): Tool[];
   /** Whether actions that would normally be asked about may run without a yes (deleting never may). */
   autonomous: boolean;
+  /** Turns a long or untidy final answer into two or three sentences fit to be spoken. */
+  summarize?(answer: string): Promise<string>;
   now?: () => Date;
 };
 
 // Applying to several jobs takes many clicks; each round is one look or action.
 const MAX_ROUNDS = 80;
-const SYSTEM = `You are Jarvis, working in the background on a task for the user while he does other things. Work step by step with your tools and check each result. For anything about the world now (news, prices, results, people), search the web and read the pages; never answer from memory, which is out of date. Nobody can answer questions until you finish, so make sensible choices yourself. Actions that need his yes are refused here: leave them and say so at the end. When finished, reply with only a short spoken summary of the outcome, two or three plain sentences with no lists, markdown or symbols.`;
+const SYSTEM = `You are Jarvis, working in the background on a task for the user while he does other things. Work step by step with your tools and check each result. For anything about the world now (news, prices, results, people), search the web and read the pages; never answer from memory, which is out of date. The task came through speech recognition and may hold a misheard word, such as a site or a name ("Bistby.com" for bestbuy.com): work out what was meant. Nobody can answer questions until you finish, so make sensible choices yourself. Actions that need his yes are refused here: leave them and say so at the end. When finished, reply with only a short spoken summary of the outcome, two or three plain sentences with no lists, markdown or symbols.`;
 
 /** Runs one job to the end and returns its spoken summary. */
 export async function runJob(task: string, deps: JobDeps): Promise<string> {
@@ -31,7 +33,12 @@ export async function runJob(task: string, deps: JobDeps): Promise<string> {
     let step = await stream.next();
     for (; !step.done; step = await stream.next()) reply += step.value;
     const calls = step.value ?? [];
-    if (calls.length === 0) return reply.trim() || 'It is finished, but I have nothing to report.';
+    if (calls.length === 0) {
+      const answer = reply.trim();
+      if (!answer) return 'It is finished, but I have nothing to report.';
+      // Deep models tend to write a report with headings and preambles; it has to be spoken.
+      return answer.length > 350 && deps.summarize ? await deps.summarize(answer).catch(() => answer) : answer;
+    }
     messages.push({ role: 'assistant', content: reply || null, tool_calls: calls.map((call) => ({ id: call.id, type: 'function' as const, function: { name: call.name, arguments: call.arguments } })) });
     for (const call of calls) messages.push({ role: 'tool', tool_call_id: call.id, content: await use(tools, call, deps.autonomous) });
   }

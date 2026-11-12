@@ -53,6 +53,11 @@ const PAGES: Record<string, string> = {
         <input name="cardnumber" placeholder="Card number"><textarea name="message" placeholder="Message"></textarea>
         <button type="submit">Send message</button><button type="submit">Pay now</button></form></main>`,
   '/found': '<title>Results</title><main>Results for your search.</main>',
+  '/book': `<title>Book</title><main><form action="/booked" method="get">
+        <label>Day <input type="date" name="day" aria-label="Day"></label><input type="time" name="at" aria-label="Arrival time">
+        <select name="room" aria-label="Room"><option>Single</option><option>Double</option></select>
+        <button type="submit">Book now</button></form></main>`,
+  '/booked': '<title>Booked</title><main>Booking received.</main>',
   '/sent': '<title>Sent</title><main>Thank you, your message was sent.</main>',
 };
 const visits: string[] = [];
@@ -117,4 +122,19 @@ test('following a link, then the form rules on the real page', async () => {
 
   assert.match(await tool('web_back').run({}), /Page: Contact/);
   await assert.rejects(tool('web_click').run({ ref: 99 }), /no item 99/);
+});
+
+test('booking: fields say what format they need, dropdowns are chosen by text, and booking is asked about', async () => {
+  const page = await tool('web_open').run({ url: `${site}/book` });
+  assert.match(page, /\] textbox \(date, YYYY-MM-DD\): Day/);
+  assert.match(page, /\] textbox \(time, HH:MM 24-hour\): Arrival time/);
+  const number = (label: string) => Number(new RegExp(`^\\[(\\d+)\\] .*: ${label}$`, 'm').exec(page)?.[1]);
+  await tool('web_type').run({ ref: number('Day'), text: '2026-12-24' });
+  await tool('web_type').run({ ref: number('Arrival time'), text: '19:45' });
+  await tool('web_select').run({ ref: number('Room'), option: 'Double' });
+  await assert.rejects(tool('web_select').run({ ref: number('Room'), option: 'Suite' }), /The options are: Single, Double/);
+  const book = number('Book now');
+  assert.match(tool('web_click').approval?.({ ref: book }) ?? '', /^press "Book now"/);
+  assert.match(await tool('web_click').run({ ref: book }), /Booking received/);
+  assert.ok(visits.some((visit) => visit === '/booked?day=2026-12-24&at=19%3A45&room=Double'));
 });

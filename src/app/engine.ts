@@ -33,6 +33,7 @@ const speechModel = (root: string) => {
   const turbo = join(root, 'models/ggml-large-v3-turbo-q5_0.bin');
   return existsSync(turbo) ? turbo : join(root, 'models/ggml-small.en.bin');
 };
+const SUMMARY = `Rewrite this report as what a personal assistant would say aloud to his employer: two or three short plain sentences with the outcome and the key figures. No preamble, lists, headings, markdown or symbols; write "dollars", not "$".`;
 const send = (message: ToRenderer) => process.parentPort.postMessage(message);
 
 try {
@@ -155,6 +156,12 @@ try {
         // A job does not start or schedule further jobs.
         tools: () => tools.filter((tool) => !['background_task', 'schedule_task', 'cancel_scheduled_task'].includes(tool.name)),
         autonomous,
+        summarize: async (answer) => {
+          let spoken = '';
+          const model = SPOKEN[0]!;
+          for await (const piece of chat({ model: model.model, extraBody: model.extraBody, maxTokens: 200, timeoutMs: 8000, messages: [{ role: 'system', content: SUMMARY }, { role: 'user', content: answer }] })) spoken += piece;
+          return spoken.trim() || answer;
+        },
       }),
     report: (text, note) => initiative.say({ key: `job ${note}`, kind: 'report', text, note }),
   });

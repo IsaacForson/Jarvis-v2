@@ -16,8 +16,9 @@ Needs the keys in `.env`, `brew install whisper-cpp` and the speech model in `mo
 
 What Jarvis can do on the Mac (phase 3): open apps and web addresses, set the volume, run AppleScript, find, read and
 save files in your home folder, run shell commands, look at the screen, and read your calendar and unread email from
-the Calendar and Mail apps. It also browses the web in its own Chrome window: searching, opening
-pages, following links and filling in forms. Sign in to sites yourself in that window; Jarvis never types passwords or card
+the Calendar and Mail apps. It also browses the web in its own Chrome window (phase 6): searching, opening
+pages, following links, filling in forms (dates, times and dropdowns included), comparing prices across shops and
+booking. With `JARVIS_AUTONOMOUS=0` it stops on the final page and asks before it submits or books; with `1` it goes ahead. Sign in to sites yourself in that window; Jarvis never types passwords or card
 details and never presses a payment button.
 
 It can also work inside any Mac app: it reads the front window's buttons and fields, presses them, types into fields and

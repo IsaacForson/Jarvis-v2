@@ -13,6 +13,8 @@ export type Item = {
   search: boolean;
   /** A button that sends a form. */
   submits: boolean;
+  /** What a field expects, when it is particular: date, time, email, number and the like. */
+  format?: string;
 };
 type Snapshot = { title: string; url: string; text: string; items: Item[] };
 
@@ -45,6 +47,7 @@ const LOOK = `(() => {
       secret: type === 'password' || /cc-|card.?num|cvv|cvc|security.?code|passw/i.test(hints),
       search: isSearch(el) || (kind === 'button' && searchForm),
       submits: kind === 'button' && !!form && type !== 'button' && type !== 'reset',
+      ...(kind === 'textbox' && ['date', 'time', 'datetime-local', 'month', 'week', 'number', 'email', 'tel', 'url'].includes(type) ? { format: type } : {}),
     });
   }
   const main = document.querySelector('main, article, [role=main]') || document.body;
@@ -79,7 +82,8 @@ export function typeRule(item: Item, url: string, submit: boolean): string | Err
 export function describePage(page: Snapshot, part = 1): string {
   const parts = Math.max(1, Math.ceil(page.text.length / PART));
   const shown = Math.min(part, parts);
-  const items = page.items.map((item) => `[${item.ref}] ${item.kind}: ${item.label || '(no label)'}`).join('\n');
+  const formats: Record<string, string> = { date: 'date, YYYY-MM-DD', time: 'time, HH:MM 24-hour', 'datetime-local': 'date and time, YYYY-MM-DDTHH:MM', month: 'month, YYYY-MM', week: 'week, YYYY-Www' };
+  const items = page.items.map((item) => `[${item.ref}] ${item.kind}${item.format ? ` (${formats[item.format] ?? item.format})` : ''}: ${item.label || '(no label)'}`).join('\n');
   return [
     `Page: ${page.title || '(no title)'}`,
     `Address: ${page.url}`,
@@ -227,10 +231,12 @@ export function webTools(options: { profileDir: string; headless?: boolean }): {
         const option = text(args, 'option');
         const now = await current();
         const field = now.locator(`[data-jarvis-ref="${target.ref}"]`);
-        await field.selectOption({ label: option }).catch(() => field.selectOption(option)).catch(async () => {
-          const options = await field.locator('option').allInnerTexts();
-          throw new Error(`No option "${option}". The options are: ${options.map((one) => one.trim()).join(', ')}`);
-        });
+        // Matched here first: Playwright waits its full timeout for an option that does not exist.
+        const options = (await field.locator('option').allInnerTexts()).map((one) => one.trim());
+        const wanted = option.trim().toLowerCase();
+        const match = options.find((one) => one.toLowerCase() === wanted) ?? options.find((one) => one.toLowerCase().includes(wanted));
+        if (!match) throw new Error(`No option "${option}". The options are: ${options.join(', ')}`);
+        await field.selectOption({ label: match });
         await settle(now);
         return look();
       },
