@@ -1,5 +1,6 @@
 // The window: listens to the microphone, plays Jarvis's voice, and draws the orb.
 import { MicVAD } from '@ricky0123/vad-web';
+import { type Journal, type Speaker, record } from './journal.ts';
 import type { Bridge, ToRenderer } from './messages.ts';
 import { type OrbState, startOrb } from './orb.ts';
 
@@ -59,18 +60,67 @@ const voiceLevel = () => {
 };
 
 // --- Orb ---
+// Speaking outranks listening: the microphone often hears Jarvis's own voice, and real speech from
+// the user stops playback anyway.
 const state = (): OrbState =>
-  fatal ? 'error' : !ready ? 'loading' : muted ? 'muted' : playing.size === 0 && !pendingTurn && !awake ? 'asleep' : userSpeaking ? 'listening' : playing.size > 0 ? 'speaking' : pendingTurn ? 'thinking' : 'idle';
-startOrb(document.getElementById('orb') as HTMLCanvasElement, () => {
+  fatal ? 'error' : !ready ? 'loading' : muted ? 'muted' : playing.size === 0 && !pendingTurn && !awake ? 'asleep' : playing.size > 0 ? 'speaking' : userSpeaking ? 'listening' : pendingTurn ? 'thinking' : 'idle';
+const orb = startOrb(document.getElementById('orb') as HTMLCanvasElement, () => {
   const now = state();
   return { state: now, level: now === 'speaking' ? voiceLevel() : now === 'listening' ? micLevel : 0, friday };
 });
 const say = (text: string) => (caption.textContent = text);
 const RESTING = () => (awake ? `${friday ? 'Friday' : 'Jarvis'} is listening` : 'Say “Jarvis” or “Friday”');
 
+// --- Panels: the transcript and the activity log ---
+const journal: Journal = { transcript: [], activity: [] };
+const panels = document.getElementById('panels')!;
+const toggle = document.getElementById('toggle')!;
+const NAMES: Record<Speaker, string> = { you: 'You', jarvis: 'Jarvis', friday: 'Friday' };
+const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+// Text always goes in with textContent: transcripts are whatever was said or generated, never markup.
+const row = (className: string, tag: string, text: string) => {
+  const item = document.createElement('li');
+  item.className = className;
+  const label = document.createElement('span');
+  label.className = 'tag';
+  label.textContent = tag;
+  item.append(label, text);
+  return item;
+};
+const fill = (id: string, rows: HTMLLIElement[]) => {
+  if (rows.length === 0) return;
+  const list = document.querySelector(`#${id} ol`)!;
+  list.replaceChildren(...rows);
+  list.scrollTop = list.scrollHeight;
+};
+const renderPanels = () => {
+  fill('transcript', journal.transcript.map((line) => row(line.who, NAMES[line.who], line.text)));
+  fill('activity', journal.activity.map((entry) => row(entry.alert ? 'alert' : '', clock.format(entry.at), entry.text)));
+};
+toggle.addEventListener('click', () => jarvis.send({ type: 'toggle-panels' }));
+
+// --- Frame rate: averaged over each spoken reply and reported, so a slow orb shows up in the log. ---
+let spokenFrames: number[] = [];
+setInterval(() => {
+  if (playing.size > 0) spokenFrames.push(orb.framesPerSecond());
+  else if (spokenFrames.length > 0) {
+    jarvis.send({ type: 'frame-rate', framesPerSecond: spokenFrames.reduce((sum, value) => sum + value, 0) / spokenFrames.length });
+    spokenFrames = [];
+  }
+}, 250);
+
 // --- Messages from the engine and the shortcut keys ---
 jarvis.onMessage((message: ToRenderer) => {
+  if (message.type === 'awake') friday = message.persona === 'friday';
+  record(journal, message, { friday, now: Date.now() });
+  renderPanels();
   switch (message.type) {
+    case 'panels':
+      panels.hidden = !message.open;
+      toggle.setAttribute('aria-expanded', String(message.open));
+      renderPanels();
+      break;
     case 'ready':
       ready = true;
       say(RESTING());
@@ -80,7 +130,7 @@ jarvis.onMessage((message: ToRenderer) => {
       break;
     case 'awake':
       awake = message.awake;
-      friday = message.persona === 'friday';
+      document.body.classList.toggle('friday', friday);
       say(RESTING());
       break;
     case 'fatal':

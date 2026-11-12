@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, systemPreferences, utilityProcess } from 'electron';
-import type { ToEngine, ToRenderer } from './messages.ts';
+import type { ToEngine, ToMain, ToRenderer } from './messages.ts';
 
 const root = app.getAppPath();
 const dist = join(root, 'dist');
@@ -25,12 +25,15 @@ const describe = (message: ToRenderer) =>
 app.whenReady().then(async () => {
   if (process.platform === 'darwin') await systemPreferences.askForMediaAccess('microphone');
 
-  const size = { width: 240, height: 280 };
+  // Orb only, or orb with the panels to its left. The window is see-through but still catches clicks,
+  // so it is kept as small as what it shows.
+  const COMPACT = { width: 240, height: 310 };
+  const EXPANDED = { width: 700, height: 470 };
   const area = screen.getPrimaryDisplay().workArea;
   const window = new BrowserWindow({
-    ...size,
-    x: area.x + area.width - size.width - 24,
-    y: area.y + area.height - size.height - 24,
+    ...COMPACT,
+    x: area.x + area.width - COMPACT.width - 24,
+    y: area.y + area.height - COMPACT.height - 24,
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -43,8 +46,19 @@ app.whenReady().then(async () => {
   window.webContents.on('console-message', (event) => {
     if (event.level === 'error' || event.level === 'warning') console.log(`[window ${event.level}] ${event.message}`);
   });
+  let panelsOpen = false;
+  const togglePanels = () => {
+    panelsOpen = !panelsOpen;
+    // Grow and shrink from the bottom-right corner, so the orb stays where it is.
+    const { x, y, width, height } = window.getBounds();
+    const size = panelsOpen ? EXPANDED : COMPACT;
+    window.setBounds({ ...size, x: x + width - size.width, y: y + height - size.height });
+    toRenderer({ type: 'panels', open: panelsOpen });
+  };
+
   window.webContents.on('context-menu', () =>
     Menu.buildFromTemplate([
+      { label: panelsOpen ? 'Hide panels' : 'Show panels', click: togglePanels },
       { label: 'Forget my voice (answer to anyone)', click: () => engine.postMessage({ type: 'forget-voice' } satisfies ToEngine) },
       { role: 'quit', label: 'Quit Jarvis' },
     ]).popup(),
@@ -64,9 +78,14 @@ app.whenReady().then(async () => {
     console.log(`[jarvis] ${describe(message)}`);
     toRenderer(message);
     if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest' } satisfies ToEngine);
-    if (selftest && message.type === 'speech' && process.env.JARVIS_SELFTEST_SHOT) {
-      const shot = process.env.JARVIS_SELFTEST_SHOT;
-      setTimeout(async () => writeFile(shot, (await window.webContents.capturePage()).toPNG()), 400);
+    // Self-test captures: the orb mid-sentence, then the open panels. A dark backdrop stands in for the desktop.
+    const shot = selftest ? process.env.JARVIS_SELFTEST_SHOT : undefined;
+    const capture = async (name: string) => writeFile(`${shot}-${name}.png`, (await window.webContents.capturePage()).toPNG());
+    if (shot && message.type === 'ready') void window.webContents.insertCSS('html { background: #0b1218 !important; }');
+    if (shot && message.type === 'speech') setTimeout(() => void capture('speaking'), 400);
+    if (shot && message.type === 'done') {
+      setTimeout(togglePanels, 2500);
+      setTimeout(() => void capture('panels'), 4000);
     }
     if (selftest && (message.type === 'done' || message.type === 'fatal')) setTimeout(() => app.quit(), 6000);
   });
@@ -76,13 +95,18 @@ app.whenReady().then(async () => {
   window.webContents.on('did-finish-load', () => status && toRenderer(status));
 
   // The window may only send the messages it has a reason to send, rebuilt here field by field.
-  ipcMain.on('jarvis', (_event, message: ToEngine) => {
-    if (message?.type === 'interrupt') engine.postMessage({ type: 'interrupt', byVoice: message.byVoice === true } satisfies ToEngine);
+  ipcMain.on('jarvis', (_event, message: ToEngine | ToMain) => {
+    if (message?.type === 'toggle-panels') togglePanels();
+    else if (message?.type === 'frame-rate') {
+      const rate = Number(message.framesPerSecond);
+      if (selftest || rate < 50) console.log(`[jarvis] orb frame rate while speaking: ${rate.toFixed(0)} frames per second`);
+    } else if (message?.type === 'interrupt') engine.postMessage({ type: 'interrupt', byVoice: message.byVoice === true } satisfies ToEngine);
     else if (message?.type === 'user-speech') engine.postMessage({ type: 'user-speech', active: message.active === true } satisfies ToEngine);
     else if (message?.type === 'utterance' && message.audio instanceof Float32Array) engine.postMessage(message);
   });
 
   globalShortcut.register('Control+Alt+J', () => toRenderer({ type: 'toggle-mic' }));
+  globalShortcut.register('Control+Alt+P', togglePanels);
   globalShortcut.register('Control+Alt+S', () => {
     engine.postMessage({ type: 'interrupt' } satisfies ToEngine);
     toRenderer({ type: 'stop' });

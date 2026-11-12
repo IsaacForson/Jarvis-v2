@@ -21,9 +21,17 @@ export type ToRenderer =
   | { type: 'ready' }
   | { type: 'fatal'; message: string }
   | { type: 'toggle-mic' }
+  /** The panels were opened or closed (the main process has already resized the window). */
+  | { type: 'panels'; open: boolean }
   | { type: 'stop' };
 
+/** Renderer to main process only. */
+export type ToMain =
+  | { type: 'toggle-panels' }
+  /** The orb's average frame rate while one reply was spoken. */
+  | { type: 'frame-rate'; framesPerSecond: number };
+
 export type Bridge = {
-  send(message: Extract<ToEngine, { type: 'utterance' | 'interrupt' | 'user-speech' }>): void;
+  send(message: Extract<ToEngine, { type: 'utterance' | 'interrupt' | 'user-speech' }> | ToMain): void;
   onMessage(handler: (message: ToRenderer) => void): void;
 };
