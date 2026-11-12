@@ -109,6 +109,7 @@ try {
     model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: SPOKEN.slice(1), timeoutMs: 4000 },
     personas: PERSONAS,
     voiceLock,
+    autonomous: process.env.JARVIS_AUTONOMOUS === '1',
   });
 
   process.parentPort.on('message', async ({ data }: { data: ToEngine }) => {

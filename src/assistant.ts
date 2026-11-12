@@ -2,6 +2,7 @@ import type OpenAI from 'openai';
 import type { ChatRequest, ToolCall } from './chat.ts';
 import { cleanTranscript, sentences } from './sentences.ts';
 import type { Persona, PersonaName } from './persona.ts';
+import { DELETION } from './tools/rules.ts';
 import type { Args, Tool } from './tools/types.ts';
 import type { VoiceCheck, VoiceLock } from './voice-lock.ts';
 import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake, parseYesNo } from './wake.ts';
@@ -52,6 +53,8 @@ export type AssistantDeps = {
   needsTool?(request: string, previous: string): Promise<boolean>;
   /** How long a yes-or-no question waits for its answer before the action is dropped. */
   approvalMs?: number;
+  /** Act without asking first, except deleting. Payments, passwords and card numbers are still refused. */
+  autonomous?: boolean;
   now?: () => Date;
 };
 
@@ -61,7 +64,7 @@ type Turn = { id: number; abort: AbortController; startedAt: number; transcriptM
 /** Whole exchanges are kept or dropped together, so a tool's result never loses the request it answers. */
 const MAX_EXCHANGES = 10;
 /** A reply may go back and forth with tools this many times before Jarvis gives up on it. */
-const MAX_ROUNDS = 12;
+const MAX_ROUNDS = 40;
 const APOLOGY = 'Sorry, sir, I could not reach my brain just now. Please try again.';
 // Whisper ends a finished sentence with a full stop, question mark or exclamation mark, and a trailing-off one with "...".
 const FINISHED = /[.!?]["')]*$/;
@@ -247,7 +250,7 @@ export class Assistant {
       const args: unknown = JSON.parse(call.arguments || '{}');
       if (typeof args !== 'object' || args === null || Array.isArray(args)) throw new Error('the arguments must be a JSON object');
       const action = tool.approval?.(args as Args);
-      if (action) {
+      if (action && (!this.#deps.autonomous || DELETION.test(`${action} ${call.arguments}`))) {
         // The spoken question is short; the panel shows exactly what would run.
         report('asking', `Asking permission to ${action} (${call.arguments.slice(0, 600)})`);
         if (!(await this.#approve(turn, action))) {
@@ -294,7 +297,7 @@ export class Assistant {
 
     try {
       for (let round = 0; round < MAX_ROUNDS && live() && !finished; round++) {
-        const stream = chat({ ...model, maxTokens: 400, signal: turn.abort.signal, messages, tools: definitions, ...(force ? { toolChoice: 'required' as const } : {}) });
+        const stream = chat({ ...model, maxTokens: 1000, signal: turn.abort.signal, messages, tools: definitions, ...(force ? { toolChoice: 'required' as const } : {}) });
         const checking = force ? undefined : mustAct;
         mustAct = undefined; // only the first reply is checked
         force = false;

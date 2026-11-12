@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exec } from './exec.ts';
 import { PAYMENT } from './rules.ts';
-import { text, type Tool } from './types.ts';
+import { integer, text, type Tool } from './types.ts';
 
 /** Takes a picture of the main display and returns it as base64 JPEG. Nothing is left on disk. */
 async function captureScreen(): Promise<string> {
@@ -44,6 +44,18 @@ export function screenTools(options: ScreenOptions): Tool[] {
   const capture = options.capture ?? captureScreen;
   let spot: Spot | undefined;
 
+  /** Finds a described thing by sight and asks the Mac what is really there. */
+  const find = async (target: string): Promise<Spot> => {
+    const found = await options.locate(await capture(), target);
+    if (!found || !(found.x >= 0 && found.x <= 1000 && found.y >= 0 && found.y <= 1000)) throw new Error(`I could not find ${target} on the screen. Describe it differently, or check it is visible.`);
+    const screen = JSON.parse(await options.helper(['screen'])) as { width: number; height: number };
+    const x = Math.round((found.x / 1000) * screen.width);
+    const y = Math.round((found.y / 1000) * screen.height);
+    // Sight is fallible (tested: one toolbar button in four was misplaced), so ask the Mac what is really there.
+    const under = JSON.parse(await options.helper(['at', String(x), String(y)])) as { app: string; role: string; label: string };
+    return { x, y, ...under };
+  };
+
   return [
     {
       name: 'read_screen',
@@ -60,30 +72,74 @@ export function screenTools(options: ScreenOptions): Tool[] {
       slow: true,
       run: async (args) => {
         spot = undefined;
-        const found = await options.locate(await capture(), text(args, 'target'));
-        if (!found || !(found.x >= 0 && found.x <= 1000 && found.y >= 0 && found.y <= 1000)) throw new Error('I could not find that on the screen. Describe it differently, or check it is visible.');
-        const screen = JSON.parse(await options.helper(['screen'])) as { width: number; height: number };
-        const x = Math.round((found.x / 1000) * screen.width);
-        const y = Math.round((found.y / 1000) * screen.height);
-        // Sight is fallible (tested: one toolbar button in four was misplaced), so ask the Mac what is really there.
-        const under = JSON.parse(await options.helper(['at', String(x), String(y)])) as { app: string; role: string; label: string };
-        spot = { x, y, ...under };
+        spot = await find(text(args, 'target'));
         return `Found a spot for that. What is actually there is ${naming(spot)}. If that is the right thing, call screen_click; if it is not, call screen_find again with a more precise description.`;
       },
     },
     {
       name: 'screen_click',
-      description: 'Click the spot that screen_find just found. The user is always asked first, and told what is at the spot.',
-      parameters: { type: 'object', properties: {} },
-      // Always confirmed: the spot was chosen by sight, which is sometimes wrong.
+      description: 'Click the spot that screen_find just found: a left click by default, or a right click or double click. The user is asked first, and told what is at the spot.',
+      parameters: {
+        type: 'object',
+        properties: { button: { type: 'string', enum: ['left', 'right'] }, double: { type: 'boolean', description: 'Double-click, e.g. to open a file' } },
+      },
+      // Confirmed: the spot was chosen by sight, which is sometimes wrong.
       approval: () => (spot && !PAYMENT.test(spot.label) ? `click ${naming(spot)}, which I found by sight` : undefined),
-      run: async () => {
+      run: async (args) => {
         if (!spot) throw new Error('Nothing has been found to click. Call screen_find first.');
         const target = spot;
         spot = undefined; // one find, one click: the screen may change
         if (PAYMENT.test(target.label)) throw new Error('That would spend money, which I never do. He must click it himself.');
-        await options.helper(['click', String(target.x), String(target.y)]);
+        const how = args.button === 'right' ? ['right'] : args.double === true ? ['double'] : [];
+        await options.helper(['click', String(target.x), String(target.y), ...how]);
         return `Clicked ${naming(target)}. Look at the screen or read the window again to see what happened.`;
+      },
+    },
+    {
+      name: 'screen_type',
+      description: 'Type text at the keyboard into whatever has focus now, e.g. a field just clicked with screen_click. Use app_type instead when the field is in an app_read list. Never use it for passwords or card numbers.',
+      parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      run: async (args) => {
+        await options.helper(['type', text(args, 'text')]);
+        return 'Typed it. Look at the screen to check it landed in the right place.';
+      },
+    },
+    {
+      name: 'screen_scroll',
+      description: 'Scroll with the mouse wheel over something on the screen (or the middle of the screen if no target is given).',
+      parameters: {
+        type: 'object',
+        properties: {
+          direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
+          amount: { type: 'integer', description: 'Lines to scroll, 1 to 50 (default 10)' },
+          target: { type: 'string', description: 'What to scroll over, e.g. "the message list in Mail"' },
+        },
+        required: ['direction'],
+      },
+      run: async (args) => {
+        const amount = integer(args, 'amount', { min: 1, max: 50, fallback: 10 });
+        const sign = args.direction === 'up' || args.direction === 'left' ? -1 : 1;
+        const vertical = args.direction === 'up' || args.direction === 'down';
+        const at = typeof args.target === 'string' && args.target.trim()
+          ? await find(args.target)
+          : await options.helper(['screen']).then((raw) => {
+              const screen = JSON.parse(raw) as { width: number; height: number };
+              return { x: Math.round(screen.width / 2), y: Math.round(screen.height / 2) };
+            });
+        await options.helper(['scroll', String(at.x), String(at.y), String(vertical ? sign * amount : 0), String(vertical ? 0 : sign * amount)]);
+        return `Scrolled ${String(args.direction)}. Look at the screen to see what is shown now.`;
+      },
+    },
+    {
+      name: 'screen_drag',
+      description: 'Drag one thing on the screen onto another, found by sight, e.g. a file onto a folder or a slider handle to a new position. The user is asked first.',
+      parameters: { type: 'object', properties: { from: { type: 'string', description: 'What to pick up' }, to: { type: 'string', description: 'Where to drop it' } }, required: ['from', 'to'] },
+      approval: (args) => `drag ${String(args.from)} onto ${String(args.to)}`,
+      run: async (args) => {
+        const from = await find(text(args, 'from'));
+        const to = await find(text(args, 'to'));
+        await options.helper(['drag', String(from.x), String(from.y), String(to.x), String(to.y)]);
+        return `Dragged ${naming(from)} onto ${naming(to)}. Look at the screen to check.`;
       },
     },
   ];

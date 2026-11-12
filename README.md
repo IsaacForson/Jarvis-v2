@@ -28,7 +28,9 @@ or change something, Return in messaging apps, Command-Delete and quitting are a
 never typed into. This needs Accessibility switched on, in System Settings under Privacy and Security, for the app that
 launches Jarvis (Cursor or Terminal). The small Swift helper behind it is compiled by `npm run build` and needs the Xcode
 command-line tools. Anything that changes or deletes something is asked about first ("Shall I ..., sir?") and
-runs only on a spoken yes; the activity panel shows exactly what was asked and done. Secrets (`.env`, keys, keychains)
+runs only on a spoken yes; the activity panel shows exactly what was asked and done. `JARVIS_AUTONOMOUS=1` in `.env` turns
+these questions off so Jarvis clicks, fills in and sends on its own; deleting is still asked about, and payments, passwords
+and card numbers are still refused. Secrets (`.env`, keys, keychains)
 and anything outside the home folder are off limits, and `sudo` is refused.
 
 macOS will ask once to let the app control Calendar, Mail and other apps. Looking at the screen needs Screen Recording

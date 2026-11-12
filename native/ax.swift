@@ -1,6 +1,7 @@
 // Jarvis's hands inside other apps, through the macOS accessibility interface.
-// Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE... | click X Y | at X Y | screen
-// Every command but the last three takes an optional --app NAME.
+// Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE...
+//        | click X Y [right|double] | drag X1 Y1 X2 Y2 | scroll X Y DOWN RIGHT | at X Y | screen
+// Every command before click takes an optional --app NAME.
 // Prints JSON on success; prints a plain sentence to stderr and exits 1 on failure.
 import ApplicationServices
 import Cocoa
@@ -134,11 +135,43 @@ func resolve(_ app: NSRunningApplication, _ path: String, _ role: String) -> AXU
   return element
 }
 
-func click(at point: CGPoint) {
-  for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
-    Thread.sleep(forTimeInterval: 0.05)
+func click(at point: CGPoint, right: Bool = false, count: Int = 1) {
+  let (down, up, button): (CGEventType, CGEventType, CGMouseButton) = right ? (.rightMouseDown, .rightMouseUp, .right) : (.leftMouseDown, .leftMouseUp, .left)
+  for n in 1...count {
+    for type in [down, up] {
+      let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)
+      event?.setIntegerValueField(.mouseEventClickState, value: Int64(n))
+      event?.post(tap: .cghidEventTap)
+      Thread.sleep(forTimeInterval: 0.05)
+    }
   }
+}
+
+func drag(from start: CGPoint, to end: CGPoint) {
+  let post = { (type: CGEventType, point: CGPoint) in
+    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+  }
+  post(.mouseMoved, start)
+  Thread.sleep(forTimeInterval: 0.05)
+  post(.leftMouseDown, start)
+  for step in 1...20 {
+    let t = CGFloat(step) / 20
+    post(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t))
+    Thread.sleep(forTimeInterval: 0.015)
+  }
+  post(.leftMouseUp, end)
+}
+
+/// Scrolls at a point; positive `down` scrolls the content down, as the mouse wheel would.
+func scroll(at point: CGPoint, down: Int32, right: Int32) {
+  CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+  Thread.sleep(forTimeInterval: 0.05)
+  CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: -down, wheel2: -right, wheel3: 0)?.post(tap: .cghidEventTap)
+}
+
+func onScreen(_ x: String, _ y: String) -> CGPoint {
+  guard let x = Double(x), let y = Double(y), let screen = NSScreen.main?.frame, x >= 0, y >= 0, x <= screen.width, y <= screen.height else { fail("That point is not on the screen.") }
+  return CGPoint(x: x, y: y)
 }
 
 func press(_ element: AXUIElement) {
@@ -270,9 +303,18 @@ case "menu" where arguments.count >= 3:
   requireFront(app)
   chooseMenu(app, Array(arguments.dropFirst()))
   print("{}")
-case "click" where arguments.count == 3:
-  guard let x = Double(arguments[1]), let y = Double(arguments[2]), let screen = NSScreen.main?.frame, x >= 0, y >= 0, x <= screen.width, y <= screen.height else { fail("That point is not on the screen.") }
-  click(at: CGPoint(x: x, y: y))
+case "click" where arguments.count == 3 || arguments.count == 4:
+  let how = arguments.count == 4 ? arguments[3] : "left"
+  click(at: onScreen(arguments[1], arguments[2]), right: how == "right", count: how == "double" ? 2 : 1)
+  Thread.sleep(forTimeInterval: 0.1)
+  print("{}")
+case "drag" where arguments.count == 5:
+  drag(from: onScreen(arguments[1], arguments[2]), to: onScreen(arguments[3], arguments[4]))
+  Thread.sleep(forTimeInterval: 0.1)
+  print("{}")
+case "scroll" where arguments.count == 5:
+  guard let down = Int32(arguments[3]), let right = Int32(arguments[4]) else { fail("Scroll amounts must be whole numbers.") }
+  scroll(at: onScreen(arguments[1], arguments[2]), down: down, right: right)
   Thread.sleep(forTimeInterval: 0.1)
   print("{}")
 case "at" where arguments.count == 3:
@@ -293,5 +335,5 @@ case "screen":
   guard let screen = NSScreen.main?.frame else { fail("No screen found.") }
   print("{\"width\":\(Int(screen.width)),\"height\":\(Int(screen.height))}")
 default:
-  fail("Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE... | click X Y | at X Y | screen")
+  fail("Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE... | click X Y [right|double] | drag X1 Y1 X2 Y2 | scroll X Y DOWN RIGHT | at X Y | screen")
 }

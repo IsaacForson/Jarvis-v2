@@ -217,6 +217,48 @@ export function webTools(options: { profileDir: string; headless?: boolean }): {
       },
     },
     {
+      name: 'web_select',
+      description: 'Choose an option in a dropdown on the open page, by the dropdown number and the option text as shown, then read the page again.',
+      parameters: { type: 'object', properties: { ref: number, option: { type: 'string', description: 'The option text' } }, required: ['ref', 'option'] },
+      slow: true,
+      run: async (args) => {
+        const target = item(args);
+        if (target.kind !== 'dropdown') throw new Error('That is not a dropdown. Click it instead.');
+        const option = text(args, 'option');
+        const now = await current();
+        const field = now.locator(`[data-jarvis-ref="${target.ref}"]`);
+        await field.selectOption({ label: option }).catch(() => field.selectOption(option)).catch(async () => {
+          const options = await field.locator('option').allInnerTexts();
+          throw new Error(`No option "${option}". The options are: ${options.map((one) => one.trim()).join(', ')}`);
+        });
+        await settle(now);
+        return look();
+      },
+    },
+    {
+      name: 'web_key',
+      description: 'Press a key on the open page, e.g. "Enter", "Escape", "Tab", "ArrowDown", "PageDown", "Control+a", then read the page again. Enter is confirmed with the user first, as it may send a form.',
+      parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
+      approval: (args) => (typeof args.key === 'string' && /enter|return/i.test(args.key) ? `press Enter on ${host(last?.url ?? '')}, which may send a form` : undefined),
+      run: async (args) => {
+        const now = await current();
+        await now.keyboard.press(text(args, 'key'));
+        await settle(now);
+        return look();
+      },
+    },
+    {
+      name: 'web_scroll',
+      description: 'Scroll the open page down or up, so that more of it loads (long feeds, lazy pages), then read it again.',
+      parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['down', 'up'] } }, required: ['direction'] },
+      run: async (args) => {
+        const now = await current();
+        await now.mouse.wheel(0, args.direction === 'up' ? -1500 : 1500);
+        await settle(now);
+        return look();
+      },
+    },
+    {
       name: 'web_back',
       description: 'Go back to the previous page in the browser, then read it.',
       parameters: { type: 'object', properties: {} },

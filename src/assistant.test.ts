@@ -18,6 +18,7 @@ const setup = (
     tools?: Tool[];
     needsTool?: boolean;
     approvalMs?: number;
+    autonomous?: boolean;
     /** Tool calls the model makes, round by round; a round with none ends the reply. */
     calls?: ToolCall[][];
     onSpeak?: (text: string) => void | Promise<void>;
@@ -65,6 +66,7 @@ const setup = (
     tools: overrides.tools,
     needsTool: overrides.needsTool === undefined ? undefined : async (request, previous) => (checks_.push(`${previous} / ${request}`), overrides.needsTool!),
     approvalMs: overrides.approvalMs,
+    autonomous: overrides.autonomous,
     idleSleepMs: overrides.idleSleepMs,
   });
   const summary = () =>
@@ -340,6 +342,23 @@ test('a risky action is asked about first and runs only after a spoken yes', asy
   assert.deepEqual(summary().slice(-4), ['heard:Yes, go ahead.', 'tool:done', 'speech:It is in the Trash.', 'done']);
 });
 
+test('working on its own, Jarvis acts unasked but still asks before deleting', async () => {
+  ran.length = 0;
+  const sendTool: Tool = { ...riskyTool, name: 'send', approval: () => 'send the form on example.com', run: async () => (ran.push('sent'), 'Sent.') };
+  const sent = setup([[], ['Sent.']], { heard: ['Send it.'], tools: [sendTool], calls: [[call('send', {})]], autonomous: true });
+  await sent.assistant.hear(audio);
+  assert.deepEqual(ran, ['sent']);
+  assert.ok(!sent.summary().some((line) => line.startsWith('speech:Shall I')));
+
+  const shell: Tool = { ...riskyTool, name: 'run_command', approval: (args) => `run the command: ${String(args.command)}` };
+  for (const [tool, args] of [[riskyTool, { path: '~/a' }], [shell, { command: 'rm -rf ~/old' }]] as const) {
+    const trash = setup([[], ['Left.']], { heard: ['Delete it.'], tools: [tool], calls: [[call(tool.name, args)]], autonomous: true, approvalMs: 20 });
+    await trash.assistant.hear(audio);
+    assert.ok(trash.summary().some((line) => line.startsWith('speech:Shall I')));
+    assert.ok(trash.summary().includes('tool:declined'));
+  }
+});
+
 test('a spoken no leaves the action undone and tells the model so', async () => {
   ran.length = 0;
   const { assistant, summary, requests } = setup([[], ['Left as it is.']], {
@@ -416,13 +435,13 @@ test('a slow lookup gets a spoken "one moment", and tool results stay available 
   assert.ok(requests[2]?.messages.some((message) => message.role === 'tool' && String(message.content).includes('Invoice overdue')));
 });
 
-test('a model that keeps calling tools is stopped after twelve rounds', async () => {
-  const { assistant, requests, summary } = setup(Array.from({ length: 14 }, () => []), {
+test('a model that keeps calling tools is stopped after forty rounds', async () => {
+  const { assistant, requests, summary } = setup(Array.from({ length: 42 }, () => []), {
     tools: [safeTool],
-    calls: Array.from({ length: 14 }, (_, round) => [call('open_app', { name: 'X' }, `c${round}`)]),
+    calls: Array.from({ length: 42 }, (_, round) => [call('open_app', { name: 'X' }, `c${round}`)]),
   });
   await assistant.hear(audio);
-  assert.equal(requests.length, 12);
+  assert.equal(requests.length, 40);
   assert.equal(summary().at(-2), 'speech:That took more steps than I am allowed, sir, so I have stopped.');
 });
 
