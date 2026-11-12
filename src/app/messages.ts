@@ -3,7 +3,10 @@ import type { AssistantEvent } from '../assistant.ts';
 /** Renderer to engine (relayed by the main process). */
 export type ToEngine =
   | { type: 'utterance'; audio: Float32Array }
-  | { type: 'interrupt' }
+  /** `byVoice`: the user started talking over Jarvis, as opposed to pressing the stop key. */
+  | { type: 'interrupt'; byVoice?: boolean }
+  /** The microphone heard speech start (true) or decided it was only a noise (false). */
+  | { type: 'user-speech'; active: boolean }
   /** Development check: the engine speaks a question to itself and answers it. */
   | { type: 'selftest' }
   | { type: 'shutdown' };
@@ -19,6 +22,6 @@ export type ToRenderer =
   | { type: 'stop' };
 
 export type Bridge = {
-  send(message: Extract<ToEngine, { type: 'utterance' | 'interrupt' }>): void;
+  send(message: Extract<ToEngine, { type: 'utterance' | 'interrupt' | 'user-speech' }>): void;
   onMessage(handler: (message: ToRenderer) => void): void;
 };

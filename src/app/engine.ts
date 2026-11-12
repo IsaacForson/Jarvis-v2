@@ -31,7 +31,8 @@ try {
     const audio = await tts.generate(text, { voice: VOICE, speed: SPEED });
     return { samples: audio.audio as Float32Array, sampleRate: audio.sampling_rate };
   };
-  await speak('Ready.'); // the first run pays one-off setup costs
+  // The first run of each model pays one-off setup costs; pay them now, not on the first question.
+  await Promise.all([speak('Ready.'), whisper.transcribe(new Blob([encodeWav(new Float32Array(MIC_RATE / 2), MIC_RATE)]))]);
 
   const assistant = new Assistant({
     transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)])),
@@ -44,7 +45,8 @@ try {
 
   process.parentPort.on('message', async ({ data }: { data: ToEngine }) => {
     if (data.type === 'utterance') void assistant.hear(data.audio);
-    else if (data.type === 'interrupt') assistant.interrupt();
+    else if (data.type === 'interrupt') assistant.interrupt(data.byVoice);
+    else if (data.type === 'user-speech') assistant.userSpeaking(data.active);
     else if (data.type === 'selftest') {
       const question = await speak('Jarvis, are you there?');
       void assistant.hear(resample(question.samples, question.sampleRate, MIC_RATE));

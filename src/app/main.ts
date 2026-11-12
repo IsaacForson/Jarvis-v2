@@ -14,7 +14,11 @@ try {
 }
 
 const describe = (message: ToRenderer) =>
-  message.type === 'heard' || message.type === 'speech' ? `${message.type}: ${message.text}` : 'message' in message ? `${message.type}: ${message.message}` : message.type;
+  message.type === 'timing'
+    ? `timing: transcript ${Math.round(message.transcriptMs)} ms, model's first words ${Math.round(message.firstWordsMs)} ms, first sound ${Math.round(message.firstAudioMs)} ms`
+    : message.type === 'awake'
+      ? (message.awake ? 'awake' : 'asleep')
+      : message.type === 'heard' || message.type === 'speech' ? `${message.type}: ${message.text}` : 'message' in message ? `${message.type}: ${message.message}` : message.type;
 
 app.whenReady().then(async () => {
   if (process.platform === 'darwin') await systemPreferences.askForMediaAccess('microphone');
@@ -64,9 +68,10 @@ app.whenReady().then(async () => {
   });
   window.webContents.on('did-finish-load', () => status && toRenderer(status));
 
-  // The window may only send the two messages it has a reason to send.
+  // The window may only send the messages it has a reason to send, rebuilt here field by field.
   ipcMain.on('jarvis', (_event, message: ToEngine) => {
-    if (message?.type === 'interrupt') engine.postMessage({ type: 'interrupt' } satisfies ToEngine);
+    if (message?.type === 'interrupt') engine.postMessage({ type: 'interrupt', byVoice: message.byVoice === true } satisfies ToEngine);
+    else if (message?.type === 'user-speech') engine.postMessage({ type: 'user-speech', active: message.active === true } satisfies ToEngine);
     else if (message?.type === 'utterance' && message.audio instanceof Float32Array) engine.postMessage(message);
   });
 

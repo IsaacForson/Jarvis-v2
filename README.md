@@ -5,7 +5,7 @@ Personal Mac assistant. The full plan is in `Jarvis Features and Build Spec.pdf`
 ## Run Jarvis (phase 1, in progress)
 
 `npm start` opens the orb at the bottom right of the screen. Jarvis starts asleep: say "Hey Jarvis" (or
-"Jarvis, what time is it?") to wake it, then just talk. "Go to sleep, Jarvis" or "Stop listening" sends it back to sleep.
+"Jarvis, what time is it?") to wake it, then just talk. "Go to sleep, Jarvis" or "Stop listening" sends it back to sleep, and so do two minutes of silence.
 Needs the keys in `.env`, `brew install whisper-cpp` and the speech model in `models/` (steps below).
 
 - Ctrl+Option+J turns the microphone off and on.

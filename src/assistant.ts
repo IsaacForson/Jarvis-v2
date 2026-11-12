@@ -8,6 +8,8 @@ export type AssistantEvent =
   /** Jarvis woke up or went to sleep. Asleep, it ignores everything but its name. */
   | { type: 'awake'; awake: boolean }
   | { type: 'thinking'; turn: number }
+  /** Delays for one answered turn, each counted from the moment the utterance arrived. */
+  | { type: 'timing'; turn: number; transcriptMs: number; firstWordsMs: number; firstAudioMs: number }
   | { type: 'heard'; turn: number; text: string }
   | { type: 'speech'; turn: number; text: string; speech: Speech }
   | { type: 'error'; turn: number; message: string }
@@ -24,91 +26,187 @@ export type AssistantDeps = {
   persona: string;
   /** Skip the wake word at the start; Jarvis normally starts asleep. */
   startAwake?: boolean;
+  /** How long to wait for the rest of a sentence that trailed off. */
+  holdMs?: number;
+  /** Silence after which Jarvis goes back to sleep on its own. */
+  idleSleepMs?: number;
 };
 
 type Message = { role: 'user' | 'assistant'; content: string };
+type Turn = { id: number; abort: AbortController; startedAt: number; transcriptMs: number };
 const MAX_HISTORY = 20;
-
 const APOLOGY = 'Sorry, sir, I could not reach my brain just now. Please try again.';
+// Whisper ends a finished sentence with a full stop, question mark or exclamation mark, and a trailing-off one with "...".
+const FINISHED = /[.!?]["')]*$/;
+const TRAILING_OFF = /(\.\.\.|…)["')]*$/;
 
 /** Runs one spoken exchange at a time: hear, think, speak sentence by sentence. A new one cancels the old. */
 export class Assistant {
   readonly #deps: AssistantDeps;
   #history: Message[] = [];
-  #turn = 0;
+  #turns = 0;
   #abort = new AbortController();
   #awake: boolean;
+  /** The question being answered now, and whether any of the answer has been spoken yet. */
+  #answering: { question: string; spoken: boolean } | undefined;
+  /** Words heard but not yet answered: a sentence that trailed off, or a question the user talked over. */
+  #carry = '';
+  #holdTimer: ReturnType<typeof setTimeout> | undefined;
+  #idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(deps: AssistantDeps) {
     this.#deps = deps;
     this.#awake = deps.startAwake ?? false;
   }
 
-  /** Stops the current exchange. What was already spoken stays in the conversation. */
-  interrupt(): void {
-    this.#abort.abort();
+  /**
+   * Stops the current exchange. What was already spoken stays in the conversation.
+   * `byVoice`: the user started talking over Jarvis. If no answer had been spoken yet they were
+   * probably still finishing their sentence, so the question is kept and joined to what comes next.
+   */
+  interrupt(byVoice = false): void {
+    clearTimeout(this.#holdTimer);
+    this.#carry = byVoice && this.#answering && !this.#answering.spoken ? this.#answering.question : byVoice ? this.#carry : '';
+    this.#cancel();
+  }
+
+  /** The microphone heard speech start (true) or decided it was only a noise (false). */
+  userSpeaking(active: boolean): void {
+    clearTimeout(this.#holdTimer);
+    if (!active) this.#armHold();
   }
 
   async hear(audio: Float32Array): Promise<void> {
-    this.interrupt();
-    const abort = (this.#abort = new AbortController());
-    const turn = ++this.#turn;
-    const { transcribe, chat, speak, emit, model, persona } = this.#deps;
-    const live = () => !abort.signal.aborted;
-    let spoken = '';
-    let question: Message | undefined;
-
-    // Speaks one sentence; false means the turn was interrupted meanwhile.
-    const say = async (sentence: string) => {
-      const speech = await speak(sentence);
-      if (live()) emit({ type: 'speech', turn, text: sentence, speech });
-      return live();
-    };
-    const setAwake = (awake: boolean) => {
-      this.#awake = awake;
-      emit({ type: 'awake', awake });
-    };
-
-    try {
-      const text = cleanTranscript(await transcribe(audio));
-      if (!live() || !text) return;
-      const wake = this.#awake ? undefined : parseWake(text);
-      if (wake && !wake.woke) return; // asleep and not addressed: none of our business
-      emit({ type: 'thinking', turn });
-      emit({ type: 'heard', turn, text });
+    clearTimeout(this.#holdTimer);
+    this.#cancel();
+    const turn = this.#begin();
+    const { transcribe, emit } = this.#deps;
+    await this.#run(turn, async () => {
+      let text = cleanTranscript(await transcribe(audio));
+      turn.transcriptMs = performance.now() - turn.startedAt;
+      if (turn.abort.signal.aborted) return;
+      const wake = this.#awake || !text ? undefined : parseWake(text);
+      if (!text || (wake && !wake.woke)) return this.#armHold(); // noise, or asleep and not addressed
+      emit({ type: 'heard', turn: turn.id, text });
 
       if (wake) {
-        setAwake(true);
-        if (!wake.rest) return void (await say('Yes, sir?'));
+        this.#setAwake(true);
+        text = wake.rest;
+        if (!text) return void (await this.#say(turn, 'Yes, sir?'));
       } else if (isSleepCommand(text)) {
-        setAwake(false);
-        return void (await say('Going quiet, sir.'));
+        this.#carry = '';
+        this.#setAwake(false);
+        return void (await this.#say(turn, 'Going quiet, sir.'));
       }
 
-      question = { role: 'user', content: wake?.rest || text };
-      const stream = chat({
-        ...model,
-        maxTokens: 300,
-        signal: abort.signal,
-        messages: [{ role: 'system', content: persona }, ...this.#history, question],
-      });
-      for await (const sentence of sentences(stream)) {
-        if (!live() || !(await say(sentence))) break;
-        spoken += (spoken ? ' ' : '') + sentence;
+      const full = [this.#carry, text].filter(Boolean).join(' ');
+      this.#carry = '';
+      if (TRAILING_OFF.test(full) || !FINISHED.test(full)) {
+        // Probably a pause mid-sentence: wait for the rest instead of answering half a question.
+        this.#carry = full;
+        return this.#armHold();
       }
+      await this.#answer(turn, full);
+    });
+  }
+
+  #begin(): Turn {
+    this.#abort = new AbortController();
+    return { id: ++this.#turns, abort: this.#abort, startedAt: performance.now(), transcriptMs: 0 };
+  }
+
+  #cancel(): void {
+    this.#answering = undefined;
+    this.#abort.abort();
+  }
+
+  /** Runs a turn's work; reports failures out loud, and always ends the turn with `done`. */
+  async #run(turn: Turn, work: () => Promise<void>): Promise<void> {
+    const { emit } = this.#deps;
+    try {
+      await work();
     } catch (error) {
       // An interrupt surfaces as an abort error from the model call; that is not a failure.
-      if (live()) {
-        emit({ type: 'error', turn, message: error instanceof Error ? error.message : String(error) });
-        await say(APOLOGY).catch(() => {}); // a voice assistant must not fail silently
+      if (!turn.abort.signal.aborted) {
+        emit({ type: 'error', turn: turn.id, message: error instanceof Error ? error.message : String(error) });
+        await this.#say(turn, APOLOGY).catch(() => {}); // a voice assistant must not fail silently
       }
     } finally {
+      emit({ type: 'done', turn: turn.id });
+      this.#armIdle();
+    }
+  }
+
+  /** Speaks one sentence; false means the turn was interrupted meanwhile. */
+  async #say(turn: Turn, sentence: string): Promise<boolean> {
+    const speech = await this.#deps.speak(sentence);
+    const live = !turn.abort.signal.aborted;
+    if (live) this.#deps.emit({ type: 'speech', turn: turn.id, text: sentence, speech });
+    return live;
+  }
+
+  async #answer(turn: Turn, text: string): Promise<void> {
+    const { chat, emit, model, persona } = this.#deps;
+    const elapsed = () => performance.now() - turn.startedAt;
+    const answering = { question: text, spoken: false };
+    this.#answering = answering;
+    const question: Message = { role: 'user', content: text };
+    let spoken = '';
+    let firstWordsMs = 0;
+    emit({ type: 'thinking', turn: turn.id });
+
+    const stream = chat({
+      ...model,
+      maxTokens: 300,
+      signal: turn.abort.signal,
+      messages: [{ role: 'system', content: persona }, ...this.#history, question],
+    });
+    const timed = (async function* () {
+      for await (const piece of stream) {
+        firstWordsMs ||= elapsed();
+        yield piece;
+      }
+    })();
+
+    try {
+      for await (const sentence of sentences(timed)) {
+        if (turn.abort.signal.aborted || !(await this.#say(turn, sentence))) break;
+        if (!spoken) emit({ type: 'timing', turn: turn.id, transcriptMs: turn.transcriptMs, firstWordsMs, firstAudioMs: elapsed() });
+        spoken += (spoken ? ' ' : '') + sentence;
+        answering.spoken = true;
+      }
+    } finally {
+      if (this.#answering === answering) this.#answering = undefined;
       // Record an exchange only once something was said, and only what was said. Writing both halves
       // together here keeps turns alternating even when a newer turn is already running.
-      if (question && spoken) {
-        this.#history = [...this.#history, question, { role: 'assistant' as const, content: spoken }].slice(-MAX_HISTORY);
-      }
-      emit({ type: 'done', turn });
+      if (spoken) this.#history = [...this.#history, question, { role: 'assistant' as const, content: spoken }].slice(-MAX_HISTORY);
     }
+  }
+
+  #setAwake(awake: boolean): void {
+    this.#awake = awake;
+    this.#deps.emit({ type: 'awake', awake });
+  }
+
+  /** If words are waiting, answer them once the user has stayed quiet for the hold time. */
+  #armHold(): void {
+    clearTimeout(this.#holdTimer);
+    if (!this.#carry) return;
+    this.#holdTimer = setTimeout(() => {
+      const text = this.#carry;
+      this.#carry = '';
+      const turn = this.#begin();
+      void this.#run(turn, () => this.#answer(turn, text));
+    }, this.#deps.holdMs ?? 2000);
+  }
+
+  #armIdle(): void {
+    clearTimeout(this.#idleTimer);
+    if (!this.#awake) return;
+    this.#idleTimer = setTimeout(() => {
+      if (this.#answering || this.#carry) return this.#armIdle();
+      this.#setAwake(false);
+    }, this.#deps.idleSleepMs ?? 120_000);
+    this.#idleTimer.unref?.();
   }
 }
