@@ -81,7 +81,7 @@ app.whenReady().then(async () => {
     toRenderer(message);
     // The self-test speaks to itself, so the real microphone is switched off: room noise must not interrupt it.
     if (selftest && message.type === 'ready') toRenderer({ type: 'toggle-mic' });
-    if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest', question: process.env.JARVIS_SELFTEST_ASK } satisfies ToEngine);
+    if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest', question: process.env.JARVIS_SELFTEST_ASK, answer: process.env.JARVIS_SELFTEST_ANSWER } satisfies ToEngine);
     // Self-test captures: the orb mid-sentence, then the open panels. A dark backdrop stands in for the desktop.
     const shot = selftest ? process.env.JARVIS_SELFTEST_SHOT : undefined;
     const capture = async (name: string) => writeFile(`${shot}-${name}.png`, (await window.webContents.capturePage()).toPNG());
@@ -104,6 +104,8 @@ app.whenReady().then(async () => {
     else if (message?.type === 'frame-rate') {
       const rate = Number(message.framesPerSecond);
       if (selftest || rate < 50) console.log(`[jarvis] orb frame rate while speaking: ${rate.toFixed(0)} frames per second`);
+    } else if (selftest && ['interrupt', 'user-speech', 'utterance'].includes(message?.type)) {
+      // The self-test talks to itself; nothing from the real microphone may reach it.
     } else if (message?.type === 'interrupt') engine.postMessage({ type: 'interrupt', byVoice: message.byVoice === true } satisfies ToEngine);
     else if (message?.type === 'user-speech') engine.postMessage({ type: 'user-speech', active: message.active === true } satisfies ToEngine);
     else if (message?.type === 'utterance' && message.audio instanceof Float32Array) engine.postMessage(message);

@@ -8,7 +8,7 @@ export type ToEngine =
   /** The microphone heard speech start (true) or decided it was only a noise (false). */
   | { type: 'user-speech'; active: boolean }
   /** Development check: the engine speaks a question to itself and answers it. */
-  | { type: 'selftest'; question?: string }
+  | { type: 'selftest'; question?: string; /** Spoken back when Jarvis asks a yes-or-no question. */ answer?: string }
   /** From the right-click menu: the way back in if the voice lock stops recognising its owner. */
   | { type: 'forget-voice' }
   | { type: 'shutdown' };

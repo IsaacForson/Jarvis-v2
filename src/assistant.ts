@@ -55,6 +55,8 @@ export type AssistantDeps = {
   approvalMs?: number;
   /** Act without asking first, except deleting. Payments, passwords and card numbers are still refused. */
   autonomous?: boolean;
+  /** More instructions, read afresh every turn: what memory holds about the user. */
+  context?: () => string;
   now?: () => Date;
 };
 
@@ -85,6 +87,8 @@ export class Assistant {
   /** Words heard but not yet answered: a sentence that trailed off, or a question the user talked over. */
   #carry = '';
   #holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Something was forgotten during the turn under way, so it must not be kept either. */
+  #forgetting = false;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(deps: AssistantDeps) {
@@ -102,6 +106,12 @@ export class Assistant {
     clearTimeout(this.#holdTimer);
     this.#carry = byVoice && this.#answering && !this.#answering.spoken ? this.#answering.question : byVoice ? this.#carry : '';
     this.#cancel();
+  }
+
+  /** Drops the conversation held in this session, including the turn under way, once that turn ends. */
+  forgetConversation(): void {
+    this.#history = [];
+    this.#forgetting = true;
   }
 
   /** The microphone heard speech start (true) or decided it was only a noise (false). */
@@ -275,14 +285,15 @@ export class Assistant {
   }
 
   async #answer(turn: Turn, text: string): Promise<void> {
-    const { chat, emit, model, personas, tools = [], needsTool, now = () => new Date() } = this.#deps;
+    const { chat, emit, model, personas, tools = [], needsTool, context, now = () => new Date() } = this.#deps;
     const elapsed = () => performance.now() - turn.startedAt;
     const live = () => !turn.abort.signal.aborted;
     const answering = { question: text, spoken: false };
     this.#answering = answering;
     const question: Message = { role: 'user', content: text };
     const clock = now().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' });
-    const messages: Message[] = [{ role: 'system', content: `${personas[this.#persona].prompt}\nIt is now ${clock}.` }, ...this.#history.flat(), question];
+    const extra = context?.();
+    const messages: Message[] = [{ role: 'system', content: `${personas[this.#persona].prompt}\nIt is now ${clock}.${extra ? `\n${extra}` : ''}` }, ...this.#history.flat(), question];
     const exchange: Message[] = [question];
     const definitions = tools.map((tool) => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
     let spoken = '';
@@ -366,7 +377,8 @@ export class Assistant {
       if (this.#answering === answering) this.#answering = undefined;
       // A finished exchange is recorded whole, tool results included, so follow-up questions can refer
       // to them. An interrupted one keeps only the question and what was actually said aloud.
-      if (finished) this.#history.push(exchange);
+      if (this.#forgetting) this.#forgetting = false;
+      else if (finished) this.#history.push(exchange);
       else if (spoken) this.#history.push([question, { role: 'assistant', content: spoken.trim() }]);
       this.#history = this.#history.slice(-MAX_EXCHANGES);
     }

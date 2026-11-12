@@ -36,6 +36,12 @@ and anything outside the home folder are off limits, and `sudo` is refused.
 macOS will ask once to let the app control Calendar, Mail and other apps. Looking at the screen needs Screen Recording
 switched on for the app that launches Jarvis (System Settings, Privacy and Security).
 
+Memory (phase 4): tell Jarvis a preference or a fact about yourself, the people in your life or your projects and it
+saves it for future sessions. Every conversation is kept too: "what did we say about the dentist?" or "what did we talk
+about yesterday?" searches it by meaning ("my teeth" finds a talk about the dentist). "What do you remember about me?" lists the facts, and "forget everything about Dana" deletes
+the matching facts and conversation lines, after asking, along with the request to forget and its reply. It all lives in `memory.db` in the app's data folder
+(`~/Library/Application Support/Jarvis`), readable only by you.
+
 Voice lock: say "Jarvis, learn my voice" and then three full sentences. After that only your voice is answered.
 "Forget my voice", or the right-click menu, removes the lock. Each check prints its match score in the log;
 the pass mark is `threshold` in `src/voice-lock.ts`.

@@ -196,14 +196,17 @@ const startMicrophone = async () => {
       jarvis.send({ type: 'user-speech', active: true });
     },
     // Confirmed speech, not a cough or a click: this is what cuts Jarvis off mid-sentence.
-    onSpeechRealStart: interrupt,
+    onSpeechRealStart: () => {
+      if (!muted) interrupt();
+    },
     onVADMisfire: () => {
       userSpeaking = false;
       jarvis.send({ type: 'user-speech', active: false });
     },
     onSpeechEnd: (utterance) => {
       userSpeaking = false;
-      if (ready && !fatal) jarvis.send({ type: 'utterance', audio: utterance });
+      // A VAD that was mid-start when the microphone was switched off can still finish a segment.
+      if (ready && !fatal && !muted) jarvis.send({ type: 'utterance', audio: utterance });
     },
   });
   if (!muted) await vad.start(); // the microphone may have been switched off while this was loading

@@ -1,7 +1,7 @@
 // The speech-and-thinking process. It runs apart from the window so heavy work never stalls the orb.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AutoModelForXVector, AutoProcessor } from '@huggingface/transformers';
+import { AutoModelForXVector, AutoProcessor, pipeline } from '@huggingface/transformers';
 import { KokoroTTS } from 'kokoro-js';
 import { Assistant } from '../assistant.ts';
 import { createChat } from '../chat.ts';
@@ -9,6 +9,7 @@ import { KeyPool, parseKeys } from '../key-pool.ts';
 import { SPOKEN, TIERS } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
 import { createTools } from '../tools/index.ts';
+import { factsPrompt, Memory, memoryTools } from '../tools/memory.ts';
 import { VoiceLock } from '../voice-lock.ts';
 import { encodeWav, resample } from '../wav.ts';
 import { startWhisper } from '../whisper.ts';
@@ -16,7 +17,7 @@ import type { ToEngine, ToRenderer } from './messages.ts';
 
 const SPEED = 1.1; // the stock pace sounded slightly slow
 const MIC_RATE = 16_000;
-const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
+const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TOOL also when the user tells a lasting fact or preference about himself, the people in his life or his projects, or asks what was said in an earlier conversation, or asks to forget something. Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
 const send = (message: ToRenderer) => process.parentPort.postMessage(message);
 
 try {
@@ -25,13 +26,15 @@ try {
   if (!root || !dataDir) throw new Error('JARVIS_ROOT and JARVIS_DATA must be set');
   const pool = new KeyPool(parseKeys(process.env.NVIDIA_API_KEYS));
   const SPEAKER_MODEL = 'Xenova/wavlm-base-plus-sv';
-  const [tts, whisper, speakerProcessor, speakerModel] = await Promise.all([
+  const [tts, whisper, speakerProcessor, speakerModel, embedder] = await Promise.all([
     // fp32 measured 2.5x faster than the smaller q8 build on this Mac (M2 Pro).
     KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'fp32', device: 'cpu' }),
     startWhisper({ model: join(root, 'models/ggml-small.en.bin'), vocabulary: 'Jarvis, Friday, Forson.' }),
     AutoProcessor.from_pretrained(SPEAKER_MODEL),
     // The 8-bit build told voices apart as well as the full one in testing, at a quarter of the size.
     AutoModelForXVector.from_pretrained(SPEAKER_MODEL, { dtype: 'q8', device: 'cpu' }),
+    // For memory search by meaning: small (23 MB) and quick (about 2 ms a line on this Mac).
+    pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'q8', device: 'cpu' }),
   ]);
   process.on('exit', whisper.stop);
   if (whisper.pid) send({ type: 'helper', pid: whisper.pid });
@@ -91,10 +94,19 @@ try {
     },
   });
 
+  mkdirSync(dataDir, { recursive: true });
+  const memoryFile = join(dataDir, 'memory.db');
+  const memory = new Memory(memoryFile, { embed: async (text) => (await embedder(text, { pooling: 'mean', normalize: true })).data as Float32Array });
+  chmodSync(memoryFile, 0o600);
+  void memory.index(); // lines saved before search by meaning existed, or before a crash
+  let speaker = 'jarvis';
+  let selftestAnswer: string | undefined;
+
   const assistant = new Assistant({
     transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)])),
     chat,
-    tools: hands.tools,
+    tools: [...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() })],
+    context: () => factsPrompt(memory),
     // The small fast model gives a one-word second opinion on whether a request needs a tool. Tested
     // 12 Nov 2026: 17 of 18 sample requests right in about 0.4 s; the larger models were worse at it.
     needsTool: async (request, previous) => {
@@ -104,7 +116,19 @@ try {
       return /tool/i.test(verdict);
     },
     speak,
-    emit: send,
+    emit: (event) => {
+      if (event.type === 'awake') speaker = event.persona;
+      if (event.type === 'heard') memory.log('you', event.text, event.turn);
+      if (event.type === 'speech') memory.log(speaker, event.text, event.turn);
+      if (event.type === 'speech' && selftestAnswer && /^Shall I/.test(event.text)) {
+        const answer = selftestAnswer;
+        setTimeout(async () => {
+          const reply = await speak(answer);
+          void assistant.hear(resample(reply.samples, reply.sampleRate, MIC_RATE));
+        }, 500);
+      }
+      send(event);
+    },
     // A model that has not started answering within 4 s is given up on, and the next one is asked.
     model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: SPOKEN.slice(1), timeoutMs: 4000 },
     personas: PERSONAS,
@@ -118,6 +142,7 @@ try {
     else if (data.type === 'user-speech') assistant.userSpeaking(data.active);
     else if (data.type === 'forget-voice') voiceLock.forget();
     else if (data.type === 'selftest') {
+      selftestAnswer = data.answer;
       const question = await speak(data.question || 'Jarvis, are you there?');
       void assistant.hear(resample(question.samples, question.sampleRate, MIC_RATE));
     } else if (data.type === 'shutdown') {
