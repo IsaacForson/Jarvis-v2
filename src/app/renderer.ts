@@ -47,7 +47,7 @@ const stopPlayback = () => {
 const interrupt = () => {
   if (playing.size === 0 && !pendingTurn) return;
   stopPlayback();
-  jarvis.send({ type: 'interrupt' });
+  jarvis.send({ type: 'interrupt', byVoice: true });
 };
 
 const voiceLevel = () => {
@@ -129,13 +129,18 @@ const startMicrophone = async () => {
     onFrameProcessed: (_probabilities, frame) => {
       micLevel = Math.min(1, Math.sqrt(frame.reduce((sum, value) => sum + value * value, 0) / frame.length) * 8);
     },
+    // A pause this long ends a turn. Short, so replies start sooner; a sentence split by a longer
+    // pause is joined back together by the engine.
+    redemptionMs: 500,
     onSpeechStart: () => {
       userSpeaking = true;
+      jarvis.send({ type: 'user-speech', active: true });
     },
     // Confirmed speech, not a cough or a click: this is what cuts Jarvis off mid-sentence.
     onSpeechRealStart: interrupt,
     onVADMisfire: () => {
       userSpeaking = false;
+      jarvis.send({ type: 'user-speech', active: false });
     },
     onSpeechEnd: (utterance) => {
       userSpeaking = false;
