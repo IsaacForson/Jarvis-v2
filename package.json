@@ -16,6 +16,7 @@
     "start": "npm run build && electron ."
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "@ricky0123/vad-web": "^0.0.31",
     "kokoro-js": "^1.2.1",
     "openai": "^7.55.0"

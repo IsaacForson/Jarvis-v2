@@ -10,6 +10,7 @@ let ready = false;
 let fatal = '';
 let muted = false;
 let awake = false;
+let friday = false;
 let userSpeaking = false;
 let micLevel = 0;
 let pendingTurn = false; // a turn is in flight and has not finished
@@ -62,10 +63,10 @@ const state = (): OrbState =>
   fatal ? 'error' : !ready ? 'loading' : muted ? 'muted' : playing.size === 0 && !pendingTurn && !awake ? 'asleep' : userSpeaking ? 'listening' : playing.size > 0 ? 'speaking' : pendingTurn ? 'thinking' : 'idle';
 startOrb(document.getElementById('orb') as HTMLCanvasElement, () => {
   const now = state();
-  return { state: now, level: now === 'speaking' ? voiceLevel() : now === 'listening' ? micLevel : 0 };
+  return { state: now, level: now === 'speaking' ? voiceLevel() : now === 'listening' ? micLevel : 0, friday };
 });
 const say = (text: string) => (caption.textContent = text);
-const RESTING = () => (awake ? 'Listening' : 'Say “Hey Jarvis”');
+const RESTING = () => (awake ? `${friday ? 'Friday' : 'Jarvis'} is listening` : 'Say “Jarvis” or “Friday”');
 
 // --- Messages from the engine and the shortcut keys ---
 jarvis.onMessage((message: ToRenderer) => {
@@ -74,8 +75,12 @@ jarvis.onMessage((message: ToRenderer) => {
       ready = true;
       say(RESTING());
       break;
+    case 'voice':
+      if (message.result === 'stranger') say('Voice not recognised');
+      break;
     case 'awake':
       awake = message.awake;
+      friday = message.persona === 'friday';
       say(RESTING());
       break;
     case 'fatal':
