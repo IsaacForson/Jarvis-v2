@@ -186,3 +186,13 @@ test('controls inside a frame, such as a consent dialog, are listed and clicked'
   await tool('web_click').run({ ref: accept });
   assert.doesNotMatch(await tool('web_read').run({}), /Accept all/, 'the click landed inside the frame');
 });
+
+test('a background job browses in its own window and leaves the spoken side\'s page alone', async () => {
+  const job = (name: string) => web.jobTools.find((candidate) => candidate.name === name)!;
+  assert.match(await tool('web_open').run({ url: `${site}/` }), /Page: Home/);
+  assert.match(await job('web_open').run({ url: `${site}/book` }), /Page: Book/);
+  assert.match(await tool('web_read').run({}), /Page: Home/);
+  // Each side follows its own links only.
+  assert.match(await tool('web_click').run({ ref: ref(await tool('web_read').run({}), 'Contact us') }), /Page: Contact/);
+  assert.match(await job('web_read').run({}), /Page: Book/);
+});

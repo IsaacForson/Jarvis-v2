@@ -72,16 +72,19 @@ try {
     },
     load: () => {
       try {
-        const saved: unknown = JSON.parse(readFileSync(printFile, 'utf8'));
-        return Array.isArray(saved) && saved.every((value) => typeof value === 'number') ? saved : undefined;
+        // Older files hold the voiceprint alone; newer ones hold it with its own pass mark.
+        const saved = JSON.parse(readFileSync(printFile, 'utf8')) as number[] | { print?: unknown; threshold?: unknown };
+        const print = Array.isArray(saved) ? saved : saved.print;
+        if (!Array.isArray(print) || !print.every((value) => typeof value === 'number')) return undefined;
+        return { print, ...(!Array.isArray(saved) && typeof saved.threshold === 'number' ? { threshold: saved.threshold } : {}) };
       } catch {
         return undefined; // no voice enrolled yet
       }
     },
-    save: (print) => {
-      if (!print) return rmSync(printFile, { force: true });
+    save: (voice) => {
+      if (!voice) return rmSync(printFile, { force: true });
       mkdirSync(dataDir, { recursive: true });
-      writeFileSync(printFile, JSON.stringify(print), { mode: 0o600 });
+      writeFileSync(printFile, JSON.stringify(voice), { mode: 0o600 });
     },
   });
 
@@ -117,6 +120,16 @@ try {
   const memoryFile = join(dataDir, 'memory.db');
   const memory = new Memory(memoryFile, { embed: async (text) => (await embedder(text, { pooling: 'mean', normalize: true })).data as Float32Array });
   chmodSync(memoryFile, 0o600);
+  // A copy a day of everything remembered, the last week's kept. Forgetting stays forgotten after a week.
+  const backUp = () => {
+    try {
+      const copy = memory.backup(join(dataDir, 'backups'));
+      if (copy) console.log(`[jarvis] memory backed up to ${copy}`);
+    } catch (error) {
+      console.error('[jarvis] memory backup failed:', error instanceof Error ? error.message : error);
+    }
+  };
+  backUp();
   void memory.index(); // lines saved before search by meaning existed, or before a crash
   let speaker = 'jarvis';
   let lastSaid = '';
@@ -151,13 +164,16 @@ try {
   });
   const tasks = new Tasks({
     dbPath: memoryFile,
-    runJob: (task) =>
+    runJob: (task, done, onStep) =>
       runJob(task, {
+        done,
+        onStep,
         chat,
         // Long jobs can wait for the deep model's thinking; the everyday model stands in if it is down.
         model: { model: TIERS.hard.model, extraBody: TIERS.hard.extraBody, fallbacks: [TIERS.medium], timeoutMs: 60_000 },
         // A job does not start or schedule further jobs.
-        tools: () => tools.filter((tool) => !['background_task', 'schedule_task', 'cancel_scheduled_task'].includes(tool.name)),
+        // Jobs browse in a window of their own, so they do not steer the page he is using with Jarvis.
+        tools: () => tools.filter((tool) => !['background_task', 'schedule_task', 'cancel_scheduled_task'].includes(tool.name)).map((tool) => hands.jobWebTools.find((own) => own.name === tool.name) ?? tool),
         autonomous,
         summarize: async (answer) => {
           let spoken = '';
@@ -211,8 +227,10 @@ try {
       }
       send(event);
     },
-    // A model that has not started answering within 4 s is given up on, and the next one is asked.
-    model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: SPOKEN.slice(1), timeoutMs: 4000 },
+    // A model that has not started answering within 2.5 s is joined by the next one (it normally starts in
+    // 1 to 1.7 s, measured 12 Nov 2026); after 4 s it is given up on. Lightning backs it up first: unlike
+    // Bolt it calls tools reliably when given the whole tool list (Bolt answered in words 8 times of 8).
+    model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: [SPOKEN[2]!, SPOKEN[1]!], timeoutMs: 4000, hedgeMs: 2500 },
     personas: PERSONAS,
     voiceLock,
     autonomous,
@@ -247,7 +265,8 @@ try {
   tasks.resume(); // jobs a restart cut short
   const wake = createWaker();
   const tick = () =>
-    void Promise.resolve(tasks.tick())
+    void Promise.resolve(backUp())
+      .then(() => tasks.tick())
       .then(() => initiative.tick())
       .then(() => wake([...initiative.nextTimes(), ...tasks.nextRuns()]))
       .catch((error: unknown) => console.error('[jarvis] initiative failed:', error instanceof Error ? error.message : error));

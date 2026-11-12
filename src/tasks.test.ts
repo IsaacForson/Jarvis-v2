@@ -110,3 +110,31 @@ test('the next runs of scheduled tasks are known, for waking the Mac', async () 
   await tool('schedule_task').run({ task: 'x', time: '08:00', days: 'weekdays' });
   assert.deepEqual(tasks.nextRuns(), [new Date('2026-11-12T08:00').getTime()]);
 });
+
+test('a restarted job is told what it had already done, and is dropped after being cut short three times', async () => {
+  const first = await setup('2026-11-12T10:00', {
+    runJob: (_task, _done, onStep) => {
+      onStep('web_click {"ref":4}: Applied to Acme');
+      return new Promise<string>(() => {}); // cut short after one action
+    },
+  });
+  first.tasks.start('Apply to five jobs');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  first.tasks.close();
+
+  let told: string[] = [];
+  const cutShort = { runJob: (_task: string, done: string[]) => ((told = done), new Promise<string>(() => {})) };
+  for (const hour of ['11', '12']) {
+    const again = await setup(`2026-11-12T${hour}:00`, cutShort, first.dbPath);
+    again.tasks.resume();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    again.tasks.close();
+  }
+  assert.deepEqual(told, ['web_click {"ref":4}: Applied to Acme']);
+
+  const last = await setup('2026-11-12T13:00', {}, first.dbPath);
+  last.tasks.resume();
+  await last.tasks.idle();
+  assert.deepEqual(last.ran, [], 'not started a fourth time');
+  assert.match(await last.tool('task_results').run({}), /Dropped: it was cut short three times/);
+});

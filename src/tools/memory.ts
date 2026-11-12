@@ -1,3 +1,5 @@
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { text, type Tool } from './types.ts';
 
@@ -136,6 +138,25 @@ export class Memory {
     this.#muted = this.#turn?.id;
     this.#open = undefined;
     return { facts: facts.length, lines: Number(lines) };
+  }
+
+  /**
+   * Copies the whole file (memory, reminders, scheduled tasks) into `dir`, once a day, keeping the
+   * latest `keep` copies. Returns the new copy's path, or undefined if today's already exists.
+   * shortcut: the copies are on the same disk, so they guard against a damaged file or a wrong
+   * "forget", not a lost Mac; Time Machine or another off-Mac backup covers that.
+   */
+  backup(dir: string, keep = 7): string | undefined {
+    const now = new Date(this.#now());
+    const two = (value: number) => String(value).padStart(2, '0');
+    const file = join(dir, `memory-${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}.db`);
+    if (existsSync(file)) return undefined;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    this.#db.exec(`VACUUM INTO '${file.replaceAll("'", "''")}'`); // a consistent copy, even mid-write
+    chmodSync(file, 0o600);
+    const copies = readdirSync(dir).filter((name) => /^memory-\d{4}-\d{2}-\d{2}\.db$/.test(name)).sort();
+    for (const old of copies.slice(0, -keep)) rmSync(join(dir, old));
+    return file;
   }
 
   close(): void {

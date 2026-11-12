@@ -1,6 +1,6 @@
 // Phase 0: how fast does each chosen model start talking? Run with `npm run speed`.
 import { createChat } from './chat.ts';
-import { KeyPool, parseKeys } from './key-pool.ts';
+import { KeyPool, keychainKeys, parseKeys } from './key-pool.ts';
 import { TIERS, type Tier } from './models.ts';
 import { measureTurn, median, type TurnTiming } from './timing.ts';
 
@@ -13,7 +13,7 @@ const PROMPTS = [
   'Give me one tip for a clearer email.',
 ];
 
-const pool = new KeyPool(parseKeys(process.env.NVIDIA_API_KEYS));
+const pool = new KeyPool(parseKeys(process.env.NVIDIA_API_KEYS || keychainKeys()));
 const chat = createChat(pool);
 console.log(`${pool.size} API key(s) loaded, ${PROMPTS.length} requests per model.\n`);
 

@@ -2,12 +2,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { integer, text, type Tool } from './tools/types.ts';
 
 type Scheduled = { id: number; task: string; time: string; days: string; last: number };
-type Job = { id: number; task: string; created: number; finished: number | null; result: string | null; scheduled: number | null };
+type Job = { id: number; task: string; created: number; finished: number | null; result: string | null; scheduled: number | null; steps: string; restarts: number };
 
 export type TaskDeps = {
   dbPath: string;
-  /** Does one job to the end with the tools, and returns its spoken summary. */
-  runJob(task: string): Promise<string>;
+  /**
+   * Does one job to the end with the tools, and returns its spoken summary. `done` lists the actions
+   * carried out before a restart; `onStep` is called after each new one.
+   */
+  runJob(task: string, done: string[], onStep: (step: string) => void): Promise<string>;
   /** Says the outcome when Jarvis is free. */
   report(text: string, note: string): void;
   now?: () => Date;
@@ -19,6 +22,10 @@ const DAY = 24 * 60 * MINUTE;
 const CATCH_UP = 12 * 60 * MINUTE;
 /** Unfinished jobs older than this are not restarted after Jarvis restarts. */
 const RESUME = DAY;
+/** A job that has been cut short this often is given up on: it may be what is stopping Jarvis. */
+const MAX_RESTARTS = 2;
+/** Only the latest actions are handed to a restarted job. */
+const MAX_STEPS = 60;
 const NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 
@@ -74,22 +81,31 @@ export class Tasks {
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS scheduled (id INTEGER PRIMARY KEY, task TEXT NOT NULL, time TEXT NOT NULL, days TEXT NOT NULL, last INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, task TEXT NOT NULL, created INTEGER NOT NULL, finished INTEGER, result TEXT, scheduled INTEGER);`);
+    // Added later: what a job has done so far, and how often a restart has cut it short.
+    const columns = (this.#db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]).map((column) => column.name);
+    if (!columns.includes('steps')) this.#db.exec("ALTER TABLE jobs ADD COLUMN steps TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.includes('restarts')) this.#db.exec('ALTER TABLE jobs ADD COLUMN restarts INTEGER NOT NULL DEFAULT 0');
   }
 
   /** Records a job and queues it behind any job already running. Returns its number. */
   start(task: string, scheduled?: number): number {
     const { lastInsertRowid } = this.#db.prepare('INSERT INTO jobs (task, created, scheduled) VALUES (?, ?, ?)').run(task, this.#now().getTime(), scheduled ?? null);
     const id = Number(lastInsertRowid);
-    this.#queue({ id, task, scheduled: scheduled ?? null });
+    this.#queue({ id, task, scheduled: scheduled ?? null, steps: '[]' });
     return id;
   }
 
-  #queue(job: Pick<Job, 'id' | 'task' | 'scheduled'>): void {
+  #queue(job: Pick<Job, 'id' | 'task' | 'scheduled' | 'steps'>): void {
     this.#chain = this.#chain.then(async () => {
       let result: string;
       let spoken: string;
+      const steps = JSON.parse(job.steps) as string[];
+      const record = (step: string) => {
+        steps.push(step);
+        this.#db.prepare('UPDATE jobs SET steps = ? WHERE id = ?').run(JSON.stringify(steps.slice(-MAX_STEPS)), job.id);
+      };
       try {
-        result = await this.#deps.runJob(job.task);
+        result = await this.#deps.runJob(job.task, steps.slice(-MAX_STEPS), record);
         spoken = `Sir, the ${job.scheduled ? 'scheduled' : 'background'} task is done. ${result}`;
       } catch (error) {
         result = `Failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -109,8 +125,12 @@ export class Tasks {
   resume(): void {
     const now = this.#now().getTime();
     for (const job of this.#db.prepare('SELECT * FROM jobs WHERE finished IS NULL ORDER BY id').all() as Job[]) {
-      if (now - job.created <= RESUME) this.#queue(job);
-      else this.#db.prepare("UPDATE jobs SET finished = ?, result = 'Dropped: Jarvis was off for too long' WHERE id = ?").run(now, job.id);
+      if (now - job.created > RESUME) this.#db.prepare("UPDATE jobs SET finished = ?, result = 'Dropped: Jarvis was off for too long' WHERE id = ?").run(now, job.id);
+      else if (job.restarts >= MAX_RESTARTS) this.#db.prepare("UPDATE jobs SET finished = ?, result = 'Dropped: it was cut short three times' WHERE id = ?").run(now, job.id);
+      else {
+        this.#db.prepare('UPDATE jobs SET restarts = restarts + 1 WHERE id = ?').run(job.id);
+        this.#queue(job);
+      }
     }
   }
 

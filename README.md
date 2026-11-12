@@ -91,8 +91,9 @@ and names much better, for about 0.7 s more per sentence; Jarvis uses it when it
 Started at login, Jarvis runs as "Electron", so Accessibility and Screen Recording must be allowed for Electron too.
 
 Voice lock: say "Jarvis, learn my voice" and then three full sentences. After that only your voice is answered.
-"Forget my voice", or the right-click menu, removes the lock. Each check prints its match score in the log;
-the pass mark is `threshold` in `src/voice-lock.ts`.
+"Forget my voice", or the right-click menu, removes the lock. The pass mark is worked out from your
+three sentences and saved with the voiceprint; each check prints its match score in the log. If it turns you away too
+often, say "learn my voice" again.
 
 Orb colours: dim blue is asleep, bright blue is awake or speaking, mint is hearing you, violet is thinking, grey is microphone off, red is an error.
 

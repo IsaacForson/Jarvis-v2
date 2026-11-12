@@ -48,3 +48,12 @@ test('a long report is boiled down to a few spoken sentences', async () => {
   const summary = await runJob('Compare', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: true, summarize: async (answer) => `Both are 198 dollars (${answer.length} characters read).` });
   assert.match(summary, /^Both are 198 dollars \(\d+ characters read\)\.$/);
 });
+
+test('each action is reported as it is done, and a restarted job is told what was done before', async () => {
+  ran.length = 0;
+  const steps: string[] = [];
+  const { chat, requests } = model([[call('web_search', { query: 'jobs' }, 'a'), call('move_to_trash', {}, 'b')]], 'Applied to two.');
+  await runJob('Apply to jobs', { chat, model: { model: 'deep' }, tools: () => tools, autonomous: true, done: ['web_click {"ref":4}: Applied to Acme'], onStep: (step) => steps.push(step) });
+  assert.deepEqual(steps, ['web_search {"query":"jobs"}: Three results.'], 'a refused action is not a step');
+  assert.match(String(requests[0]!.messages[1]!.content), /^Apply to jobs\n\nThis task was started earlier[\s\S]*- web_click \{"ref":4\}: Applied to Acme\nDo not repeat them/);
+});

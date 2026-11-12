@@ -20,6 +20,8 @@ export function createTools(options: {
   accessibilityHelper: string;
 }): {
   tools: Tool[];
+  /** The browser tools as background jobs use them: the same, in a window of their own. */
+  jobWebTools: Tool[];
   refresh(): Promise<unknown>;
   upcoming: ReturnType<typeof createCalendar>['upcoming'];
   unreadMail: typeof unreadMail;
@@ -32,6 +34,7 @@ export function createTools(options: {
   const helper = (args: string[]) => exec(options.accessibilityHelper, args, { timeoutMs: 20_000 });
   return {
     tools: [...macTools, ...installTools(), ...fileTools(undefined, (path) => exec(options.accessibilityHelper, ['pdftext', path], { timeoutMs: 60_000 })), ...terminalTools, ...screenTools({ describe: options.describeImage, locate: options.locateOnScreen, helper }), calendar.tool, ...mailTools, weatherTool, ...web.tools, ...appTools(helper)],
+    jobWebTools: web.jobTools,
     refresh: calendar.refresh,
     upcoming: calendar.upcoming,
     unreadMail,

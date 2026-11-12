@@ -3,19 +3,24 @@ import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, screen, systemPreferences, Tray, utilityProcess } from 'electron';
+import { keychainKeys } from '../key-pool.ts';
 import { LOGIN_AGENT, setStartAtLogin } from './login.ts';
 import { dragTo, type Gesture } from './gestures.ts';
 import type { ToEngine, ToMain, ToRenderer } from './messages.ts';
 
-const root = app.getAppPath();
+// Inside Jarvis.app (see scripts/make-app.mjs) the project folder is named by the app's shell.
+const root = process.env.JARVIS_PROJECT ?? app.getAppPath();
 const dist = join(root, 'dist');
 const selftest = process.env.JARVIS_SELFTEST === '1';
-// shortcut: keys come from .env; move them to the macOS Keychain when the app is packaged.
 try {
   process.loadEnvFile(join(root, '.env'));
 } catch {
-  // No .env: the engine reports the missing keys in the window.
+  // No .env: settings keep their defaults.
 }
+// The keys are in .env, or in the Keychain once `npm run keys-to-keychain` has moved them. With neither, the engine says so in the window.
+process.env.NVIDIA_API_KEYS ||= keychainKeys();
+// Opened from Finder or at login, an app gets a bare PATH without Homebrew, where whisper-server, brew and gh live.
+process.env.PATH = [...new Set(['/opt/homebrew/bin', '/usr/local/bin', ...(process.env.PATH ?? '').split(':')])].filter(Boolean).join(':');
 
 // The self-test can stand in a video file for the webcam, to check hand control without a real hand.
 const fakeCamera = selftest ? process.env.JARVIS_SELFTEST_CAMERA : undefined;
@@ -34,7 +39,7 @@ const describe = (message: ToRenderer) =>
     : message.type === 'awake'
       ? (message.awake ? `awake (${message.persona})` : 'asleep')
       : message.type === 'voice'
-        ? `voice: ${message.result}${'score' in message ? ` (match ${message.score.toFixed(2)})` : ''}`
+        ? `voice: ${message.result}${'score' in message ? ` (match ${message.score.toFixed(2)})` : 'threshold' in message ? ` (pass mark ${message.threshold})` : ''}`
         : message.type === 'tool'
           ? `tool ${message.status}: ${message.detail}`
       : message.type === 'heard' || message.type === 'speech' ? `${message.type}: ${message.text}` : 'message' in message ? `${message.type}: ${message.message}` : message.type;

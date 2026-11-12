@@ -144,260 +144,291 @@ export function describePage(page: Snapshot, part = 1): string {
 /**
  * Web browsing in a real Chrome window with its own profile, so sites the user signs in to there stay
  * signed in, and Jarvis never touches the user's everyday browser. The window opens on first use.
+ * `jobTools` are the same tools working in a second window of their own, so a background job and a
+ * spoken request can browse at the same time without steering each other's page.
  */
-export function webTools(options: { profileDir: string; headless?: boolean; downloadsDir?: string }): { tools: Tool[]; close(): Promise<void> } {
+export function webTools(options: { profileDir: string; headless?: boolean; downloadsDir?: string }): { tools: Tool[]; jobTools: Tool[]; close(): Promise<void> } {
   let context: BrowserContext | undefined;
-  let page: Page | undefined;
-  let last: Snapshot | undefined;
-  let downloaded: string[] = [];
-  let frames: Frame[] = [];
   /** Permissions allowed per site, so one can be withdrawn without losing the rest. */
   const allowed = new Map<string, Set<string>>();
   const downloadsDir = options.downloadsDir ?? join(homedir(), 'Downloads');
   const watched = new WeakSet<Page>();
-  const follow = (opened: Page) => {
-    page = opened;
-    if (watched.has(opened)) return;
-    watched.add(opened);
-    // Downloads are kept in the Downloads folder under the name the site gives, never over an existing file.
-    opened.on('download', (download) => {
-      void (async () => {
-        const name = download.suggestedFilename();
-        let target = join(downloadsDir, name);
-        for (let copy = 2; existsSync(target); copy++) target = join(downloadsDir, `${basename(name, extname(name))} ${copy}${extname(name)}`);
-        await download.saveAs(target);
-        downloaded.push(`~/Downloads/${basename(target)}`);
-      })().catch((error: unknown) => downloaded.push(`a download that failed (${error instanceof Error ? error.message : error})`));
+  /** Pages that belong to the jobs' window; the spoken side never adopts them. */
+  const jobPages = new WeakSet<Page>();
+  /** Each side's way of taking over a tab that one of its own links opened. */
+  const adopters: ((opened: Page, opener: Page | null) => void)[] = [];
+  const open = async (): Promise<BrowserContext> => {
+    if (context) return context;
+    const launched = await chromium.launchPersistentContext(options.profileDir, { channel: 'chrome', headless: options.headless ?? false, acceptDownloads: true, viewport: null }).catch((error: unknown) => {
+      throw new Error(`I could not open Chrome (${error instanceof Error ? error.message.split('\n')[0] : error}). Google Chrome must be installed.`);
     });
+    launched.on('close', () => (context = undefined)); // the user closed the window
+    launched.on('page', (opened) => void opened.opener().then((opener) => adopters.forEach((adopt) => adopt(opened, opener)), () => {}));
+    launched.setDefaultTimeout(15_000);
+    return (context = launched);
   };
-
-  const current = async (): Promise<Page> => {
-    if (!context) {
-      context = await chromium.launchPersistentContext(options.profileDir, { channel: 'chrome', headless: options.headless ?? false, acceptDownloads: true, viewport: null }).catch((error: unknown) => {
-        throw new Error(`I could not open Chrome (${error instanceof Error ? error.message.split('\n')[0] : error}). Google Chrome must be installed.`);
-      });
-      context.on('close', () => (context = page = last = undefined)); // the user closed the window
-      context.on('page', follow); // a link opened a new tab: follow it
-      context.setDefaultTimeout(15_000);
-      context.pages().forEach((open) => follow(open));
-    }
-    if (!page || page.isClosed()) follow(context.pages().at(-1) ?? (await context.newPage()));
-    return page!;
-  };
-  const look = async (part = 1): Promise<string> => {
-    const now = await current();
-    await now.waitForLoadState('domcontentloaded').catch(() => {});
-    const snapshot = (await now.evaluate(LOOK())) as Snapshot;
-    // Frames big enough to matter: consent dialogs, embedded forms and players often live in one.
-    frames = now.frames();
-    for (const [index, frame] of frames.entries()) {
-      if (index === 0 || snapshot.items.length >= 200) continue;
-      const box = await frame.frameElement().then((element) => element.boundingBox(), () => null).catch(() => null);
-      if (!box || box.width < 200 || box.height < 80) continue;
-      const inner = (await Promise.race([frame.evaluate(LOOK(snapshot.items.length)), new Promise((resolve) => setTimeout(resolve, 3000))]).catch(() => undefined)) as Snapshot | undefined;
-      if (!inner?.items.length) continue;
-      // Consent managers serve their banners from their own sites, in a frame.
-      const consent = /sourcepoint|consensu|onetrust|cookielaw|cookiebot|trustarc|didomi|quantcast|usercentrics|privacy-mgmt|consent/i.test(frame.url());
-      snapshot.items.push(...inner.items.map((one) => ({ ...one, frame: index, ...(consent && one.kind !== 'textbox' ? { consent: true } : {}) })));
-      // First, since a dialog in a frame usually sits on top of the page.
-      snapshot.text = `[In a frame from ${host(frame.url())}]\n${inner.text.slice(0, 1000)}\n[End of frame]\n\n${snapshot.text}`;
-    }
-    last = { ...snapshot, downloads: downloaded };
-    downloaded = [];
-    return describePage(last, part);
-  };
-  /** The element an item names, in the page or in the frame it was found in. */
-  const locate = (now: Page, target: Item) => (target.frame !== undefined && frames[target.frame] ? frames[target.frame]! : now).locator(`[data-jarvis-ref="${target.ref}"]`);
-  const item = (args: Record<string, unknown>): Item => {
-    const ref = integer(args, 'ref', { min: 1, max: 500, fallback: 0 });
-    const found = last?.items.find((candidate) => candidate.ref === ref);
-    if (!found) throw new Error(`There is no item ${ref} on the page as last read. Read the page again and use a number from that list.`);
-    return found;
-  };
-  // A rule is checked twice: once to decide whether to ask, and again when running, where a refusal throws.
-  const ask = (rule: () => string | Error | undefined): string | undefined => {
+  /** A new browser window, not a tab: a tab would come to the front of the window the user is watching. */
+  const newWindow = async (live: BrowserContext): Promise<Page> => {
     try {
-      const outcome = rule();
-      return typeof outcome === 'string' ? outcome : undefined;
+      const cdp = await live.newCDPSession(live.pages()[0] ?? (await live.newPage()));
+      const [opened] = await Promise.all([live.waitForEvent('page', { timeout: 5000 }), cdp.send('Target.createTarget', { url: 'about:blank', newWindow: true })]);
+      await cdp.detach().catch(() => {});
+      return opened;
     } catch {
-      return undefined; // bad arguments: run() reports them
+      return live.newPage(); // shortcut: falls back to a tab, which steals the front; fine for the rare browser that refuses a window
     }
   };
-  const refuse = (outcome: string | Error | undefined) => {
-    if (outcome instanceof Error) throw outcome;
-  };
-  const settle = async (now: Page) => {
-    await now.waitForLoadState('domcontentloaded').catch(() => {});
-    await now.waitForTimeout(600); // let the page react to the click or the typing
-  };
-  const number = { type: 'integer', description: 'The number of the item, from the list in the last page reading' };
 
-  const tools: Tool[] = [
-    {
-      name: 'web_search',
-      description: 'Search the web. Returns the results page: titles, addresses and summaries, with numbered links to open.',
-      parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-      slow: true,
-      run: async (args) => {
-        const query = encodeURIComponent(text(args, 'query'));
-        const now = await current();
-        // Tested 12 Nov 2026 with this browser: DuckDuckGo and Bing answer; Google and DuckDuckGo's
-        // plain-HTML page show a robot check. If the first shows one too, the second is tried.
-        for (const engine of ['https://duckduckgo.com/?q=', 'https://www.bing.com/search?q=']) {
-          await now.goto(engine + query, { waitUntil: 'domcontentloaded' });
-          await now.waitForTimeout(1200); // results are filled in after the page loads
-          const page = await look();
-          if (last && last.items.length > 5 && !ROBOT_CHECK.test(last.text)) return page;
-        }
-        throw new Error('The search engines asked for a robot check, so I could not search. Opening a site directly still works.');
+  const side = (forJobs: boolean): Tool[] => {
+    let page: Page | undefined;
+    let last: Snapshot | undefined;
+    let downloaded: string[] = [];
+    let frames: Frame[] = [];
+    const follow = (opened: Page) => {
+      page = opened;
+      if (forJobs) jobPages.add(opened);
+      if (watched.has(opened)) return;
+      watched.add(opened);
+      // Downloads are kept in the Downloads folder under the name the site gives, never over an existing file.
+      opened.on('download', (download) => {
+        void (async () => {
+          const name = download.suggestedFilename();
+          let target = join(downloadsDir, name);
+          for (let copy = 2; existsSync(target); copy++) target = join(downloadsDir, `${basename(name, extname(name))} ${copy}${extname(name)}`);
+          await download.saveAs(target);
+          downloaded.push(`~/Downloads/${basename(target)}`);
+        })().catch((error: unknown) => downloaded.push(`a download that failed (${error instanceof Error ? error.message : error})`));
+      });
+    };
+
+    adopters.push((opened, opener) => {
+      if (opener && opener === page) follow(opened); // a link opened a new tab: follow it
+    });
+    const current = async (): Promise<Page> => {
+      const live = await open();
+      if (!page || page.isClosed()) {
+        last = undefined;
+        follow(forJobs ? await newWindow(live) : (live.pages().filter((one) => !jobPages.has(one)).at(-1) ?? (await live.newPage())));
+      }
+      return page!;
+    };
+    const look = async (part = 1): Promise<string> => {
+      const now = await current();
+      await now.waitForLoadState('domcontentloaded').catch(() => {});
+      const snapshot = (await now.evaluate(LOOK())) as Snapshot;
+      // Frames big enough to matter: consent dialogs, embedded forms and players often live in one.
+      frames = now.frames();
+      for (const [index, frame] of frames.entries()) {
+        if (index === 0 || snapshot.items.length >= 200) continue;
+        const box = await frame.frameElement().then((element) => element.boundingBox(), () => null).catch(() => null);
+        if (!box || box.width < 200 || box.height < 80) continue;
+        const inner = (await Promise.race([frame.evaluate(LOOK(snapshot.items.length)), new Promise((resolve) => setTimeout(resolve, 3000))]).catch(() => undefined)) as Snapshot | undefined;
+        if (!inner?.items.length) continue;
+        // Consent managers serve their banners from their own sites, in a frame.
+        const consent = /sourcepoint|consensu|onetrust|cookielaw|cookiebot|trustarc|didomi|quantcast|usercentrics|privacy-mgmt|consent/i.test(frame.url());
+        snapshot.items.push(...inner.items.map((one) => ({ ...one, frame: index, ...(consent && one.kind !== 'textbox' ? { consent: true } : {}) })));
+        // First, since a dialog in a frame usually sits on top of the page.
+        snapshot.text = `[In a frame from ${host(frame.url())}]\n${inner.text.slice(0, 1000)}\n[End of frame]\n\n${snapshot.text}`;
+      }
+      last = { ...snapshot, downloads: downloaded };
+      downloaded = [];
+      return describePage(last, part);
+    };
+    /** The element an item names, in the page or in the frame it was found in. */
+    const locate = (now: Page, target: Item) => (target.frame !== undefined && frames[target.frame] ? frames[target.frame]! : now).locator(`[data-jarvis-ref="${target.ref}"]`);
+    const item = (args: Record<string, unknown>): Item => {
+      const ref = integer(args, 'ref', { min: 1, max: 500, fallback: 0 });
+      const found = last?.items.find((candidate) => candidate.ref === ref);
+      if (!found) throw new Error(`There is no item ${ref} on the page as last read. Read the page again and use a number from that list.`);
+      return found;
+    };
+    // A rule is checked twice: once to decide whether to ask, and again when running, where a refusal throws.
+    const ask = (rule: () => string | Error | undefined): string | undefined => {
+      try {
+        const outcome = rule();
+        return typeof outcome === 'string' ? outcome : undefined;
+      } catch {
+        return undefined; // bad arguments: run() reports them
+      }
+    };
+    const refuse = (outcome: string | Error | undefined) => {
+      if (outcome instanceof Error) throw outcome;
+    };
+    const settle = async (now: Page) => {
+      await now.waitForLoadState('domcontentloaded').catch(() => {});
+      await now.waitForTimeout(600); // let the page react to the click or the typing
+    };
+    const number = { type: 'integer', description: 'The number of the item, from the list in the last page reading' };
+
+    const tools: Tool[] = [
+      {
+        name: 'web_search',
+        description: 'Search the web. Returns the results page: titles, addresses and summaries, with numbered links to open.',
+        parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+        slow: true,
+        run: async (args) => {
+          const query = encodeURIComponent(text(args, 'query'));
+          const now = await current();
+          // Tested 12 Nov 2026 with this browser: DuckDuckGo and Bing answer; Google and DuckDuckGo's
+          // plain-HTML page show a robot check. If the first shows one too, the second is tried.
+          for (const engine of ['https://duckduckgo.com/?q=', 'https://www.bing.com/search?q=']) {
+            await now.goto(engine + query, { waitUntil: 'domcontentloaded' });
+            await now.waitForTimeout(1200); // results are filled in after the page loads
+            const page = await look();
+            if (last && last.items.length > 5 && !ROBOT_CHECK.test(last.text)) return page;
+          }
+          throw new Error('The search engines asked for a robot check, so I could not search. Opening a site directly still works.');
+        },
       },
-    },
-    {
-      name: 'web_open',
-      description:
-        'Open a web address in your own browser window and read the page: its text and a numbered list of links, buttons and fields. Use this whenever you need to read a page or do something on it.',
-      parameters: { type: 'object', properties: { url: { type: 'string', description: 'A full http or https address' } }, required: ['url'] },
-      slow: true,
-      run: async (args) => {
-        const address = text(args, 'url').trim();
-        // "example.com/page" is how people and models say addresses; treat it as https.
-        const url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(address) ? address : `https://${address}`);
-        if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Only http and https addresses can be opened');
-        const now = await current();
-        await now.goto(url.href, { waitUntil: 'domcontentloaded' });
-        // Cookie banners and sign-in prompts often arrive a moment after the page.
-        await now.waitForLoadState('load', { timeout: 5000 }).catch(() => {});
-        await now.waitForTimeout(1500);
-        return look();
+      {
+        name: 'web_open',
+        description:
+          'Open a web address in your own browser window and read the page: its text and a numbered list of links, buttons and fields. Use this whenever you need to read a page or do something on it.',
+        parameters: { type: 'object', properties: { url: { type: 'string', description: 'A full http or https address' } }, required: ['url'] },
+        slow: true,
+        run: async (args) => {
+          const address = text(args, 'url').trim();
+          // "example.com/page" is how people and models say addresses; treat it as https.
+          const url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(address) ? address : `https://${address}`);
+          if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Only http and https addresses can be opened');
+          const now = await current();
+          await now.goto(url.href, { waitUntil: 'domcontentloaded' });
+          // Cookie banners and sign-in prompts often arrive a moment after the page.
+          await now.waitForLoadState('load', { timeout: 5000 }).catch(() => {});
+          await now.waitForTimeout(1500);
+          return look();
+        },
       },
-    },
-    {
-      name: 'web_read',
-      description: 'Read the page that is open in the browser now: after the user changed it, or to get a later part of a long page.',
-      parameters: { type: 'object', properties: { part: { type: 'integer', description: 'Which part of the text (default 1)' } } },
-      run: async (args) => look(integer(args, 'part', { min: 1, max: 200, fallback: 1 })),
-    },
-    {
-      name: 'web_click',
-      description: 'Click a link, button, checkbox or dropdown on the open page, by its number, then read the page again. Buttons that send or change something are confirmed with the user first; payment buttons are never pressed.',
-      parameters: { type: 'object', properties: { ref: number }, required: ['ref'] },
-      approval: (args) => ask(() => clickRule(item(args), last?.url ?? '')),
-      slow: true,
-      run: async (args) => {
-        const target = item(args);
-        refuse(clickRule(target, last?.url ?? ''));
-        const now = await current();
-        await locate(now, target).click();
-        await settle(now);
-        return look();
+      {
+        name: 'web_read',
+        description: 'Read the page that is open in the browser now: after the user changed it, or to get a later part of a long page.',
+        parameters: { type: 'object', properties: { part: { type: 'integer', description: 'Which part of the text (default 1)' } } },
+        run: async (args) => look(integer(args, 'part', { min: 1, max: 200, fallback: 1 })),
       },
-    },
-    {
-      name: 'web_type',
-      description: 'Type into a text field on the open page, by its number, replacing what is there; set submit to press Enter afterwards. Sending a form is confirmed with the user first (a search is not). Password and payment fields are never typed into.',
-      parameters: { type: 'object', properties: { ref: number, text: { type: 'string' }, submit: { type: 'boolean', description: 'Press Enter after typing' } }, required: ['ref', 'text'] },
-      approval: (args) => ask(() => typeRule(item(args), last?.url ?? '', args.submit === true)),
-      slow: true,
-      run: async (args) => {
-        const target = item(args);
-        refuse(typeRule(target, last?.url ?? '', args.submit === true));
-        if (typeof args.text !== 'string') throw new Error('"text" must be text');
-        const now = await current();
-        const field = locate(now, target);
-        await field.fill(args.text);
-        if (args.submit === true) await field.press('Enter');
-        await settle(now);
-        return look();
+      {
+        name: 'web_click',
+        description: 'Click a link, button, checkbox or dropdown on the open page, by its number, then read the page again. Buttons that send or change something are confirmed with the user first; payment buttons are never pressed.',
+        parameters: { type: 'object', properties: { ref: number }, required: ['ref'] },
+        approval: (args) => ask(() => clickRule(item(args), last?.url ?? '')),
+        slow: true,
+        run: async (args) => {
+          const target = item(args);
+          refuse(clickRule(target, last?.url ?? ''));
+          const now = await current();
+          await locate(now, target).click();
+          await settle(now);
+          return look();
+        },
       },
-    },
-    {
-      name: 'web_select',
-      description: 'Choose an option in a dropdown on the open page, by the dropdown number and the option text as shown, then read the page again.',
-      parameters: { type: 'object', properties: { ref: number, option: { type: 'string', description: 'The option text' } }, required: ['ref', 'option'] },
-      slow: true,
-      run: async (args) => {
-        const target = item(args);
-        if (target.kind !== 'dropdown') throw new Error('That is not a dropdown. Click it instead.');
-        const option = text(args, 'option');
-        const now = await current();
-        const field = locate(now, target);
-        // Matched here first: Playwright waits its full timeout for an option that does not exist.
-        const options = (await field.locator('option').allInnerTexts()).map((one) => one.trim());
-        const wanted = option.trim().toLowerCase();
-        const match = options.find((one) => one.toLowerCase() === wanted) ?? options.find((one) => one.toLowerCase().includes(wanted));
-        if (!match) throw new Error(`No option "${option}". The options are: ${options.join(', ')}`);
-        await field.selectOption({ label: match });
-        await settle(now);
-        return look();
+      {
+        name: 'web_type',
+        description: 'Type into a text field on the open page, by its number, replacing what is there; set submit to press Enter afterwards. Sending a form is confirmed with the user first (a search is not). Password and payment fields are never typed into.',
+        parameters: { type: 'object', properties: { ref: number, text: { type: 'string' }, submit: { type: 'boolean', description: 'Press Enter after typing' } }, required: ['ref', 'text'] },
+        approval: (args) => ask(() => typeRule(item(args), last?.url ?? '', args.submit === true)),
+        slow: true,
+        run: async (args) => {
+          const target = item(args);
+          refuse(typeRule(target, last?.url ?? '', args.submit === true));
+          if (typeof args.text !== 'string') throw new Error('"text" must be text');
+          const now = await current();
+          const field = locate(now, target);
+          await field.fill(args.text);
+          if (args.submit === true) await field.press('Enter');
+          await settle(now);
+          return look();
+        },
       },
-    },
-    {
-      name: 'web_key',
-      description: 'Press a key on the open page, e.g. "Enter", "Escape", "Tab", "ArrowDown", "PageDown", "Control+a", then read the page again. Enter is confirmed with the user first, as it may send a form.',
-      parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
-      approval: (args) => (typeof args.key === 'string' && /enter|return/i.test(args.key) ? `press Enter on ${host(last?.url ?? '')}, which may send a form` : undefined),
-      run: async (args) => {
-        const now = await current();
-        await now.keyboard.press(text(args, 'key'));
-        await settle(now);
-        return look();
+      {
+        name: 'web_select',
+        description: 'Choose an option in a dropdown on the open page, by the dropdown number and the option text as shown, then read the page again.',
+        parameters: { type: 'object', properties: { ref: number, option: { type: 'string', description: 'The option text' } }, required: ['ref', 'option'] },
+        slow: true,
+        run: async (args) => {
+          const target = item(args);
+          if (target.kind !== 'dropdown') throw new Error('That is not a dropdown. Click it instead.');
+          const option = text(args, 'option');
+          const now = await current();
+          const field = locate(now, target);
+          // Matched here first: Playwright waits its full timeout for an option that does not exist.
+          const options = (await field.locator('option').allInnerTexts()).map((one) => one.trim());
+          const wanted = option.trim().toLowerCase();
+          const match = options.find((one) => one.toLowerCase() === wanted) ?? options.find((one) => one.toLowerCase().includes(wanted));
+          if (!match) throw new Error(`No option "${option}". The options are: ${options.join(', ')}`);
+          await field.selectOption({ label: match });
+          await settle(now);
+          return look();
+        },
       },
-    },
-    {
-      name: 'web_scroll',
-      description:
-        'Scroll the open page: down or up by a screen, or to the top or bottom, then read it again. Use it to see more of a long page, load more results, or reach buttons further down; the reading says how far down the page you are.',
-      parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom'] }, screens: { type: 'integer', description: 'How many screens to move up or down (default 1)' } }, required: ['direction'] },
-      run: async (args) => {
-        const now = await current();
-        const screens = integer(args, 'screens', { min: 1, max: 20, fallback: 1 });
-        if (args.direction === 'top' || args.direction === 'bottom') {
-          await now.evaluate((end) => {
-            const scroller = document.scrollingElement ?? document.documentElement;
-            scroller.scrollTo({ top: end === 'top' ? 0 : scroller.scrollHeight });
-          }, args.direction);
-        } else {
-          // The mouse wheel, as a person would, so pages that load more on scroll do so.
-          const height = await now.evaluate(() => innerHeight);
-          await now.mouse.wheel(0, (args.direction === 'up' ? -1 : 1) * screens * height * 0.85);
-        }
-        await settle(now);
-        return look();
+      {
+        name: 'web_key',
+        description: 'Press a key on the open page, e.g. "Enter", "Escape", "Tab", "ArrowDown", "PageDown", "Control+a", then read the page again. Enter is confirmed with the user first, as it may send a form.',
+        parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] },
+        approval: (args) => (typeof args.key === 'string' && /enter|return/i.test(args.key) ? `press Enter on ${host(last?.url ?? '')}, which may send a form` : undefined),
+        run: async (args) => {
+          const now = await current();
+          await now.keyboard.press(text(args, 'key'));
+          await settle(now);
+          return look();
+        },
       },
-    },
-    {
-      name: 'web_permission',
-      description:
-        "Allow or block a permission for the open site, such as location, notifications, camera or microphone, when the site asks for it or needs it. Blocked is the default. Allowing the camera or microphone is asked about first.",
-      parameters: {
-        type: 'object',
-        properties: { permission: { type: 'string', enum: ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read', 'midi'] }, allow: { type: 'boolean' } },
-        required: ['permission', 'allow'],
+      {
+        name: 'web_scroll',
+        description:
+          'Scroll the open page: down or up by a screen, or to the top or bottom, then read it again. Use it to see more of a long page, load more results, or reach buttons further down; the reading says how far down the page you are.',
+        parameters: { type: 'object', properties: { direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom'] }, screens: { type: 'integer', description: 'How many screens to move up or down (default 1)' } }, required: ['direction'] },
+        run: async (args) => {
+          const now = await current();
+          const screens = integer(args, 'screens', { min: 1, max: 20, fallback: 1 });
+          if (args.direction === 'top' || args.direction === 'bottom') {
+            await now.evaluate((end) => {
+              const scroller = document.scrollingElement ?? document.documentElement;
+              scroller.scrollTo({ top: end === 'top' ? 0 : scroller.scrollHeight });
+            }, args.direction);
+          } else {
+            // The mouse wheel, as a person would, so pages that load more on scroll do so.
+            const height = await now.evaluate(() => innerHeight);
+            await now.mouse.wheel(0, (args.direction === 'up' ? -1 : 1) * screens * height * 0.85);
+          }
+          await settle(now);
+          return look();
+        },
       },
-      approval: (args) => (args.allow === true && (args.permission === 'camera' || args.permission === 'microphone') ? `let ${host(last?.url ?? '')} use your ${String(args.permission)}` : undefined),
-      run: async (args) => {
-        const permission = text(args, 'permission');
-        const now = await current();
-        const origin = new URL(now.url()).origin;
-        const forSite = allowed.get(origin) ?? new Set<string>();
-        if (args.allow === true) forSite.add(permission);
-        else forSite.delete(permission);
-        allowed.set(origin, forSite);
-        // Playwright can only withdraw everything, so the rest is given back afterwards.
-        await context!.clearPermissions();
-        for (const [site, granted] of allowed) if (granted.size) await context!.grantPermissions([...granted], { origin: site });
-        return `${args.allow === true ? 'Allowed' : 'Blocked'} ${permission} for ${host(origin)}. Reload the page if it was waiting.`;
+      {
+        name: 'web_permission',
+        description:
+          "Allow or block a permission for the open site, such as location, notifications, camera or microphone, when the site asks for it or needs it. Blocked is the default. Allowing the camera or microphone is asked about first.",
+        parameters: {
+          type: 'object',
+          properties: { permission: { type: 'string', enum: ['geolocation', 'notifications', 'camera', 'microphone', 'clipboard-read', 'midi'] }, allow: { type: 'boolean' } },
+          required: ['permission', 'allow'],
+        },
+        approval: (args) => (args.allow === true && (args.permission === 'camera' || args.permission === 'microphone') ? `let ${host(last?.url ?? '')} use your ${String(args.permission)}` : undefined),
+        run: async (args) => {
+          const permission = text(args, 'permission');
+          const now = await current();
+          const origin = new URL(now.url()).origin;
+          const forSite = allowed.get(origin) ?? new Set<string>();
+          if (args.allow === true) forSite.add(permission);
+          else forSite.delete(permission);
+          allowed.set(origin, forSite);
+          // Playwright can only withdraw everything, so the rest is given back afterwards.
+          const live = await open();
+          await live.clearPermissions();
+          for (const [site, granted] of allowed) if (granted.size) await live.grantPermissions([...granted], { origin: site });
+          return `${args.allow === true ? 'Allowed' : 'Blocked'} ${permission} for ${host(origin)}. Reload the page if it was waiting.`;
+        },
       },
-    },
-    {
-      name: 'web_back',
-      description: 'Go back to the previous page in the browser, then read it.',
-      parameters: { type: 'object', properties: {} },
-      run: async () => {
-        await (await current()).goBack({ waitUntil: 'domcontentloaded' });
-        return look();
+      {
+        name: 'web_back',
+        description: 'Go back to the previous page in the browser, then read it.',
+        parameters: { type: 'object', properties: {} },
+        run: async () => {
+          await (await current()).goBack({ waitUntil: 'domcontentloaded' });
+          return look();
+        },
       },
-    },
-  ];
-  return { tools, close: async () => void (await context?.close().catch(() => {})) };
+    ];
+    return tools;
+  };
+  return { tools: side(false), jobTools: side(true), close: async () => void (await context?.close().catch(() => {})) };
 }

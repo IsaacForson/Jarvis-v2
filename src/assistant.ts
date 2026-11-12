@@ -32,7 +32,7 @@ export type AssistantDeps = {
   chat(request: ChatRequest): AsyncGenerator<string, ToolCall[] | void>;
   speak(text: string, voice: string): Promise<Speech>;
   emit(event: AssistantEvent): void;
-  model: Pick<ChatRequest, 'model' | 'extraBody' | 'fallbacks' | 'timeoutMs'>;
+  model: Pick<ChatRequest, 'model' | 'extraBody' | 'fallbacks' | 'timeoutMs' | 'hedgeMs'>;
   personas: Record<PersonaName, Persona>;
   /** When given and enrolled, only the owner's voice is answered. */
   voiceLock?: Pick<VoiceLock, 'check' | 'beginEnrolment' | 'forget'>;

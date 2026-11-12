@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -109,4 +109,17 @@ test('forgetting also drops the turn that asked, its reply included, and tells t
   memory.log('you', 'What time is it?', 3);
   assert.equal(told, 1);
   assert.match(await tool(memory, 'recall').run({ date: new Date().toISOString().slice(0, 10) }), /^[^\n]+\n\d\d:\d\d you: What time is it\?$/);
+});
+
+test('a backup is made once a day, can be opened, and only the latest are kept', async () => {
+  let day = 1;
+  const { file, memory } = await open(() => new Date(2026, 10, day, 9).getTime());
+  memory.remember('Prefers tea to coffee');
+  const dir = join(file, '..', 'backups');
+  const first = memory.backup(dir, 2);
+  assert.match(first ?? '', /memory-2026-11-01\.db$/);
+  assert.equal(memory.backup(dir, 2), undefined, 'already done today');
+  assert.deepEqual(new Memory(first!).facts().map((fact) => fact.text), ['Prefers tea to coffee']);
+  for (day of [2, 3]) memory.backup(dir, 2);
+  assert.deepEqual((await readdir(dir)).sort(), ['memory-2026-11-02.db', 'memory-2026-11-03.db']);
 });

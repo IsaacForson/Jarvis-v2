@@ -263,7 +263,7 @@ test('a stranger is ignored once a voice is enrolled', async () => {
 test('"learn my voice" starts enrolment and the samples are not treated as questions', async () => {
   const { assistant, summary, requests, lockCalls } = setup([['unused']], {
     heard: ['Learn my voice.', 'The weather is lovely today.', 'I like long walks.', 'Short.', 'And a third sentence here.'],
-    voice: [{ result: 'open' }, { result: 'sample' }, { result: 'sample' }, { result: 'too-short' }, { result: 'enrolled' }],
+    voice: [{ result: 'open' }, { result: 'sample' }, { result: 'sample' }, { result: 'too-short' }, { result: 'enrolled', threshold: 0.8 }],
   });
   for (let i = 0; i < 5; i++) await assistant.hear(audio);
   assert.deepEqual(lockCalls, ['enrol']);

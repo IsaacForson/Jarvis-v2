@@ -14,7 +14,9 @@
     "voice": "node src/voice-test.ts",
     "build": "node build.mjs",
     "start": "npm run build && electron .",
-    "allow-wake": "sh scripts/allow-wake.sh"
+    "allow-wake": "sh scripts/allow-wake.sh",
+    "app": "npm run build && node scripts/make-app.mjs",
+    "keys-to-keychain": "sh scripts/keys-to-keychain.sh"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
