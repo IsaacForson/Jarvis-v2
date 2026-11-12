@@ -66,6 +66,14 @@ task, after a one-time `npm run allow-wake` (asks for your password once; it per
 with `sudo rm /etc/sudoers.d/jarvis-wake`). A Mac that is shut down, or asleep with the lid closed on battery, stays
 silent until it is woken.
 
+Doing things for you: Jarvis shops (searches each item you list, picks a well-rated one, adds it to the cart, then
+tells you the cart and total; you check out), plays videos and music on YouTube and other streaming sites (sign in
+once in its Chrome window for paid ones), installs Mac apps with Homebrew ("install VLC"), takes screenshots (screen,
+front window, or to the clipboard) and screen recordings (saved to the Desktop), scrolls whole pages, accepts cookie
+banners (including ones inside frames), saves downloads to Downloads, allows or blocks a site's location,
+notification, camera and microphone permissions, and can press buttons in system dialogs. It stops only where you are
+needed: paying, signing in, passwords, captchas and deleting.
+
 Documents: Jarvis reads Word, RTF, OpenDocument, PDF and text files, edits them in place ("change the price to 650 in
 the quote on my desktop", formatting kept) and writes new ones. Before it overwrites or edits a file, the old version
 goes to the Trash. PDFs are read only.

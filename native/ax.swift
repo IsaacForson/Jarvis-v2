@@ -1,7 +1,7 @@
 // Jarvis's hands inside other apps, through the macOS accessibility interface.
 // Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE...
 //        | click X Y [right|double] | drag X1 Y1 X2 Y2 | scroll X Y DOWN RIGHT | at X Y | screen
-//        | pdftext FILE
+//        | pdftext FILE | frontwindow
 // Every command before click takes an optional --app NAME.
 // Prints JSON on success; prints a plain sentence to stderr and exits 1 on failure.
 import ApplicationServices
@@ -43,11 +43,15 @@ func target(_ name: String?) -> NSRunningApplication {
     return front
   }
   let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-  guard let app = running.first(where: { $0.localizedName?.lowercased() == name.lowercased() })
-    ?? running.first(where: { $0.localizedName?.lowercased().contains(name.lowercased()) ?? false })
-  else { fail("\(name) is not running. Open it first.") }
-  bringToFront(app)
-  return app
+  if let app = running.first(where: { $0.localizedName?.lowercased() == name.lowercased() })
+    ?? running.first(where: { $0.localizedName?.lowercased().contains(name.lowercased()) ?? false }) {
+    bringToFront(app)
+    return app
+  }
+  // System dialogs (permission requests, "Are you sure you want to open it?") belong to background
+  // helpers such as UserNotificationCenter or CoreServicesUIAgent; their windows are used where they are.
+  if let helper = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName?.lowercased() == name.lowercased() }) { return helper }
+  fail("\(name) is not running. Open it first.")
 }
 
 /// Brings an app to the front and waits until it is. A background program's own request to activate
@@ -266,6 +270,17 @@ func chooseMenu(_ app: NSRunningApplication, _ route: [String]) {
 if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "pdftext" {
   guard let document = PDFDocument(url: URL(fileURLWithPath: CommandLine.arguments[2])) else { fail("That PDF could not be opened.") }
   print(document.string ?? "")
+  exit(0)
+}
+
+// The window number of the front app's main window, for a screenshot of just that window.
+if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "frontwindow" {
+  guard let front = NSWorkspace.shared.frontmostApplication,
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+        let window = windows.first(where: { ($0[kCGWindowOwnerPID as String] as? pid_t) == front.processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0 }),
+        let number = window[kCGWindowNumber as String] as? Int
+  else { fail("The app in front has no window on screen.") }
+  print(String(data: try! JSONSerialization.data(withJSONObject: ["id": number, "app": front.localizedName ?? ""]), encoding: .utf8)!)
   exit(0)
 }
 

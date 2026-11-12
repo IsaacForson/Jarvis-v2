@@ -2,6 +2,7 @@ import { appTools } from './apps.ts';
 import { createCalendar } from './calendar.ts';
 import { exec } from './exec.ts';
 import { fileTools } from './files.ts';
+import { installTools } from './install.ts';
 import { macTools } from './mac.ts';
 import { mailBody, mailTools, unreadMail } from './mail.ts';
 import { type ScreenOptions, screenTools } from './screen.ts';
@@ -30,7 +31,7 @@ export function createTools(options: {
   const web = webTools({ profileDir: options.browserProfileDir });
   const helper = (args: string[]) => exec(options.accessibilityHelper, args, { timeoutMs: 20_000 });
   return {
-    tools: [...macTools, ...fileTools(undefined, (path) => exec(options.accessibilityHelper, ['pdftext', path], { timeoutMs: 60_000 })), ...terminalTools, ...screenTools({ describe: options.describeImage, locate: options.locateOnScreen, helper }), calendar.tool, ...mailTools, weatherTool, ...web.tools, ...appTools(helper)],
+    tools: [...macTools, ...installTools(), ...fileTools(undefined, (path) => exec(options.accessibilityHelper, ['pdftext', path], { timeoutMs: 60_000 })), ...terminalTools, ...screenTools({ describe: options.describeImage, locate: options.locateOnScreen, helper }), calendar.tool, ...mailTools, weatherTool, ...web.tools, ...appTools(helper)],
     refresh: calendar.refresh,
     upcoming: calendar.upcoming,
     unreadMail,

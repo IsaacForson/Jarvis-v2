@@ -44,3 +44,29 @@ test('a payment button found by sight is refused, and a failed find says so', as
   await assert.rejects(setup({ app: '', role: '', label: '' }, 'nowhere').tool('screen_find').run({ target: 'x' }), /could not find/);
   await assert.rejects(setup({ app: '', role: '', label: '' }, { x: 1500, y: 2 }).tool('screen_find').run({ target: 'x' }), /could not find/);
 });
+
+test('screenshots of the screen or front window go to the Desktop or the clipboard; recordings start and stop', async () => {
+  const shots: string[][] = [];
+  const recorded: string[][] = [];
+  let stopped = 0;
+  const tools = screenTools({
+    describe: async () => '',
+    locate: async () => undefined,
+    helper: async (args) => (args[0] === 'frontwindow' ? '{"id":42,"app":"Notes"}' : '{}'),
+    screencapture: async (args) => shots.push(args),
+    record: (args) => (recorded.push(args), { stop: async () => void stopped++ }),
+    saveDir: '/Users/me/Desktop',
+    now: () => new Date('2026-11-12T19:40:05'),
+  });
+  const run = (name: string, args = {}) => tools.find((one) => one.name === name)!.run(args);
+  assert.match(await run('take_screenshot'), /Saved a screenshot of the screen as \/Users\/me\/Desktop\/Screenshot 2026-11-12 at 19\.40\.05\.png/);
+  assert.deepEqual(shots[0], ['-x', '/Users/me/Desktop/Screenshot 2026-11-12 at 19.40.05.png']);
+  await run('take_screenshot', { window: true, clipboard: true });
+  assert.deepEqual(shots[1], ['-x', '-c', '-o', '-l', '42']);
+  assert.match(await run('start_screen_recording', { sound: true }), /Recording the screen with sound into .*Screen Recording 2026-11-12 at 19\.40\.05\.mov/);
+  assert.deepEqual(recorded[0], ['-v', '-x', '-g', '/Users/me/Desktop/Screen Recording 2026-11-12 at 19.40.05.mov']);
+  await assert.rejects(run('start_screen_recording'), /already running/);
+  assert.match(await run('stop_screen_recording'), /saved as .*\.mov/);
+  assert.equal(stopped, 1);
+  await assert.rejects(run('stop_screen_recording'), /No screen recording/);
+});

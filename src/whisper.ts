@@ -63,7 +63,10 @@ export async function startWhisper(options: { model: string; convert?: boolean; 
     form.set('response_format', 'json');
     const prompt = [options.vocabulary, context].filter(Boolean).join(' ');
     if (prompt) form.set('prompt', prompt);
-    const response = await fetch(`${url}/inference`, { method: 'POST', body: form });
+    // A stuck server must not leave Jarvis deaf without a word: give up and say so.
+    const response = await fetch(`${url}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(20_000) }).catch((error: unknown) => {
+      throw new Error(`whisper-server did not answer: ${error instanceof Error ? error.message : error}`);
+    });
     if (!response.ok) throw new Error(`whisper-server answered HTTP ${response.status}`);
     const body = (await response.json()) as { text?: string; error?: string };
     if (typeof body.text !== 'string') throw new Error(`whisper-server returned no text: ${body.error ?? 'unknown error'}`);
