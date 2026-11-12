@@ -258,3 +258,11 @@ test('"forget my voice" removes the lock', async () => {
   await assistant.hear(audio);
   assert.deepEqual(lockCalls, ['forget']);
 });
+
+test('asking for Friday by request hands over without calling the model', async () => {
+  const { assistant, summary, requests, voices } = setup([['unused']], { heard: ['I want to talk to Friday.'] });
+  await assistant.hear(audio);
+  assert.deepEqual(summary(), ['heard:I want to talk to Friday.', 'awake:true', 'speech:Friday here, sir.', 'done']);
+  assert.deepEqual(voices, ['emma']);
+  assert.equal(requests.length, 0);
+});

@@ -6,7 +6,7 @@ import { KokoroTTS } from 'kokoro-js';
 import { Assistant } from '../assistant.ts';
 import { createChat } from '../chat.ts';
 import { KeyPool, parseKeys } from '../key-pool.ts';
-import { TIERS } from '../models.ts';
+import { SPOKEN } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
 import { VoiceLock } from '../voice-lock.ts';
 import { encodeWav, resample } from '../wav.ts';
@@ -74,7 +74,8 @@ try {
     chat: createChat(pool),
     speak,
     emit: send,
-    model: { model: TIERS.easy.model, extraBody: TIERS.easy.extraBody },
+    // A model that has not started answering within 4 s is given up on, and the next one is asked.
+    model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: SPOKEN.slice(1), timeoutMs: 4000 },
     personas: PERSONAS,
     voiceLock,
   });

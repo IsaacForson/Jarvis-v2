@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
-import { createChat } from './chat.ts';
+import { type ChatRequest, createChat } from './chat.ts';
 import { AllKeysCoolingError, KeyPool } from './key-pool.ts';
 
 // A stand-in for NVIDIA's API: the key decides the response, and every request is recorded.
@@ -11,9 +11,12 @@ const server = createServer(async (req, res) => {
   let raw = '';
   for await (const part of req) raw += part;
   const key = (req.headers.authorization ?? '').replace('Bearer ', '');
-  requests.push({ key, body: JSON.parse(raw) });
+  const body = JSON.parse(raw) as Record<string, unknown>;
+  const model = body.model;
+  requests.push({ key, body });
 
-  const refusal = key.startsWith('limited') ? 429 : key.startsWith('revoked') ? 401 : key.startsWith('down') ? 502 : 0;
+  if (model === 'stalled') return; // never answers; the connection is closed when the tests end
+  const refusal = model === 'missing' ? 404 : key.startsWith('limited') ? 429 : key.startsWith('revoked') ? 401 : key.startsWith('down') ? 502 : 0;
   if (refusal) {
     res.writeHead(refusal, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'refused' } }));
@@ -31,14 +34,17 @@ before(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 });
-after(() => server.close());
+after(() => {
+  server.closeAllConnections();
+  server.close();
+});
 
-const ask = async (keys: string[], extraBody?: Record<string, unknown>) => {
+const ask = async (keys: string[], extraBody?: Record<string, unknown>, more: Partial<ChatRequest> = {}) => {
   requests.length = 0;
   const pool = new KeyPool(keys);
   const chat = createChat(pool, baseURL);
   let text = '';
-  for await (const piece of chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], extraBody })) text += piece;
+  for await (const piece of chat({ model: 'm', messages: [{ role: 'user', content: 'hi' }], extraBody, ...more })) text += piece;
   return { text, pool };
 };
 
@@ -82,4 +88,15 @@ test('a server error is retried on the next key', async () => {
 test('a server that stays down fails after three tries', async () => {
   await assert.rejects(ask(['down-1', 'down-2']), /502/);
   assert.equal(requests.length, 3);
+});
+
+test('a model that stalls or is missing is replaced by the next one on the list', async () => {
+  const { text } = await ask(['good'], undefined, {
+    model: 'stalled',
+    timeoutMs: 100,
+    fallbacks: [{ model: 'missing' }, { model: 'backup', extraBody: { effort: 'low' } }],
+  });
+  assert.equal(text, 'Good morning.');
+  assert.deepEqual(requests.map((r) => r.body.model), ['stalled', 'missing', 'backup']);
+  assert.equal(requests[2]?.body.effort, 'low', "the backup model's own settings are sent, not the first model's");
 });

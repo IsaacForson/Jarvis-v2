@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseWake } from './wake.ts';
+import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake } from './wake.ts';
 
 test('a name at the start says who is addressed, with or without a greeting', () => {
   assert.deepEqual(parseWake('Hey Jarvis.'), { name: 'jarvis', rest: '' });
@@ -34,4 +34,18 @@ test('voice-lock commands are recognised, and long sentences about voices are no
   assert.equal(isForgetVoiceCommand('Forget my voice.'), true);
   assert.equal(isLearnVoiceCommand('Forget my voice.'), false);
   assert.equal(isLearnVoiceCommand('Do you think a computer could ever learn to copy my voice exactly?'), false);
+});
+
+test('a request for the other assistant is a hand-over', () => {
+  for (const text of ['I want to talk to Friday.', 'Let me speak with Friday', 'Switch to Friday.', 'Hand over to Friday', 'Get me Friday.', 'Friday, take over.']) {
+    assert.equal(parseHandover(text), 'friday', text);
+  }
+  assert.equal(parseHandover('Can I talk to Jarvis?'), 'jarvis');
+  assert.equal(parseHandover('Bring back Javis.'), 'jarvis');
+});
+
+test('mentioning a name in passing is not a hand-over', () => {
+  for (const text of ['What is on Friday?', 'I talked to my boss about Jarvis.', 'Remind me to get the report ready so that I can talk to Friday about the budget next week.']) {
+    assert.equal(parseHandover(text), undefined, text);
+  }
 });

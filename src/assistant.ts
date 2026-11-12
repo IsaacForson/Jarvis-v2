@@ -2,7 +2,7 @@ import type { ChatRequest } from './chat.ts';
 import { cleanTranscript, sentences } from './sentences.ts';
 import type { Persona, PersonaName } from './persona.ts';
 import type { VoiceCheck, VoiceLock } from './voice-lock.ts';
-import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseWake } from './wake.ts';
+import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake } from './wake.ts';
 
 export type Speech = { samples: Float32Array; sampleRate: number };
 
@@ -26,7 +26,7 @@ export type AssistantDeps = {
   chat(request: ChatRequest): AsyncIterable<string>;
   speak(text: string, voice: string): Promise<Speech>;
   emit(event: AssistantEvent): void;
-  model: Pick<ChatRequest, 'model' | 'extraBody'>;
+  model: Pick<ChatRequest, 'model' | 'extraBody' | 'fallbacks' | 'timeoutMs'>;
   personas: Record<PersonaName, Persona>;
   /** When given and enrolled, only the owner's voice is answered. */
   voiceLock?: Pick<VoiceLock, 'check' | 'beginEnrolment' | 'forget'>;
@@ -110,6 +110,11 @@ export class Assistant {
         if (!this.#awake || wake.name !== this.#persona) this.#setAwake(true, wake.name);
         text = wake.rest;
         if (!text) return void (await this.#say(turn, 'Yes, sir?'));
+      }
+      const handover = parseHandover(text);
+      if (handover) {
+        if (handover !== this.#persona) this.#setAwake(true, handover);
+        return void (await this.#say(turn, handover === 'friday' ? 'Friday here, sir.' : 'Jarvis here, sir.'));
       }
       if (isSleepCommand(text)) {
         this.#carry = '';
