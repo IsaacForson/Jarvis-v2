@@ -20,6 +20,7 @@
     "@ricky0123/vad-web": "^0.0.31",
     "kokoro-js": "^1.2.1",
     "openai": "^7.55.0",
+    "playwright-core": "^1.65.0",
     "three": "^0.187.0"
   },
   "devDependencies": {

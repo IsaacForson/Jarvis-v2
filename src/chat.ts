@@ -14,7 +14,14 @@ export type ChatRequest = {
   fallbacks?: Pick<ChatRequest, 'model' | 'extraBody'>[];
   /** How long to wait for a model to start answering before trying the next. Default 8 s. */
   timeoutMs?: number;
+  /** Actions the model may ask for. What it asks for is the stream's return value. */
+  tools?: OpenAI.Chat.ChatCompletionTool[];
+  /** 'required' makes the model call a tool instead of answering in words. */
+  toolChoice?: 'required';
 };
+
+/** One action the model asked for; `arguments` is JSON text exactly as the model wrote it. */
+export type ToolCall = { id: string; name: string; arguments: string };
 
 /** Returns a function that streams a reply's text, using the pool's keys in turn. */
 export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
@@ -45,6 +52,7 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
             model: candidate.model,
             messages: request.messages,
             max_tokens: request.maxTokens,
+            ...(request.tools?.length ? { tools: request.tools, ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}) } : {}),
             stream: true,
           },
           { signal: request.signal, ...(request.timeoutMs ? { timeout: request.timeoutMs } : {}) },
@@ -70,10 +78,20 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
     }
   };
 
-  return async function* streamChat(request: ChatRequest): AsyncGenerator<string> {
+  /** Yields the reply's text as it arrives; returns the actions the model asked for, if any. */
+  return async function* streamChat(request: ChatRequest): AsyncGenerator<string, ToolCall[]> {
+    const calls: ToolCall[] = [];
     for await (const chunk of await open(request)) {
-      const text = chunk.choices[0]?.delta?.content;
-      if (text) yield text;
+      const delta = chunk.choices[0]?.delta;
+      if (delta?.content) yield delta.content;
+      // A tool call arrives in fragments: its id and name first, then its arguments piece by piece.
+      for (const part of delta?.tool_calls ?? []) {
+        const call = (calls[part.index] ??= { id: '', name: '', arguments: '' });
+        call.id ||= part.id ?? '';
+        call.name += part.function?.name ?? '';
+        call.arguments += part.function?.arguments ?? '';
+      }
     }
+    return calls.filter(Boolean);
   };
 }

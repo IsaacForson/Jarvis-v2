@@ -21,6 +21,8 @@ function describe(message: ToRenderer): { text: string; alert?: boolean } | unde
       return { text: message.result === 'enrolled' ? 'Voice learned; answering only to it now' : message.result === 'sample' ? 'Voice sample kept' : 'Voice sample too short' };
     case 'timing':
       return { text: `Replied in ${ms(message.firstAudioMs)} (heard ${ms(message.transcriptMs)}, model ${ms(message.firstWordsMs - message.transcriptMs)})` };
+    case 'tool':
+      return { text: message.detail, alert: message.status === 'failed' };
     case 'error':
     case 'fatal':
       return { text: message.message, alert: true };

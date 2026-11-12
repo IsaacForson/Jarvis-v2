@@ -16,7 +16,7 @@ let userSpeaking = false;
 let micLevel = 0;
 let pendingTurn = false; // a turn is in flight and has not finished
 let latestTurn = 0;
-let droppedThrough = 0; // audio from turns up to this one was interrupted and must not play
+let droppedThrough = 0; // audio from turns up to this one was stopped by the stop key and must not play
 
 // --- Playback: sentences arrive one at a time and are queued back to back. ---
 const audio = new AudioContext();
@@ -40,7 +40,6 @@ const play = (samples: Float32Array, sampleRate: number) => {
 };
 
 const stopPlayback = () => {
-  droppedThrough = latestTurn;
   for (const source of playing) source.stop();
   playing.clear();
   nextStart = 0;
@@ -63,13 +62,13 @@ const voiceLevel = () => {
 // Speaking outranks listening: the microphone often hears Jarvis's own voice, and real speech from
 // the user stops playback anyway.
 const state = (): OrbState =>
-  fatal ? 'error' : !ready ? 'loading' : muted ? 'muted' : playing.size === 0 && !pendingTurn && !awake ? 'asleep' : playing.size > 0 ? 'speaking' : userSpeaking ? 'listening' : pendingTurn ? 'thinking' : 'idle';
+  fatal ? 'error' : !ready ? 'loading' : playing.size > 0 ? 'speaking' : muted ? 'muted' : !pendingTurn && !awake ? 'asleep' : userSpeaking ? 'listening' : pendingTurn ? 'thinking' : 'idle';
 const orb = startOrb(document.getElementById('orb') as HTMLCanvasElement, () => {
   const now = state();
   return { state: now, level: now === 'speaking' ? voiceLevel() : now === 'listening' ? micLevel : 0, friday };
 });
 const say = (text: string) => (caption.textContent = text);
-const RESTING = () => (awake ? `${friday ? 'Friday' : 'Jarvis'} is listening` : 'Say “Jarvis” or “Friday”');
+const RESTING = () => (muted ? 'Microphone off (Ctrl+Option+J)' : awake ? `${friday ? 'Friday' : 'Jarvis'} is listening` : 'Say “Jarvis” or “Friday”');
 
 // --- Panels: the transcript and the activity log ---
 const journal: Journal = { transcript: [], activity: [] };
@@ -153,7 +152,11 @@ jarvis.onMessage((message: ToRenderer) => {
     case 'done':
       if (message.turn === latestTurn) pendingTurn = false;
       break;
+    case 'tool':
+      if (message.status === 'asking') say('Waiting for your yes or no');
+      break;
     case 'stop':
+      droppedThrough = latestTurn; // the stop key silences the rest of this turn, even sentences already on their way
       stopPlayback();
       pendingTurn = false;
       break;
@@ -168,7 +171,7 @@ let vad: MicVAD | undefined;
 const setMuted = async (value: boolean) => {
   muted = value;
   userSpeaking = false;
-  say(muted ? 'Microphone off (Ctrl+Option+J)' : RESTING());
+  say(RESTING());
   await (muted ? vad?.pause() : vad?.start());
 };
 
@@ -176,6 +179,7 @@ const startMicrophone = async () => {
   try {
   vad = await MicVAD.new({
     model: 'v5',
+    startOnLoad: false, // started below, unless the microphone was switched off meanwhile
     // shortcut: assets load straight from node_modules; copy them into the app when it is packaged.
     baseAssetPath: '../node_modules/@ricky0123/vad-web/dist/',
     onnxWASMBasePath: '../node_modules/onnxruntime-web/dist/',
@@ -202,7 +206,7 @@ const startMicrophone = async () => {
       if (ready && !fatal) jarvis.send({ type: 'utterance', audio: utterance });
     },
   });
-  await vad.start();
+  if (!muted) await vad.start(); // the microphone may have been switched off while this was loading
 } catch (error) {
   fatal = `Microphone unavailable: ${error instanceof Error ? error.message : String(error)}`;
   say(fatal);

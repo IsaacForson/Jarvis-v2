@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { Assistant, type AssistantEvent } from './assistant.ts';
-import type { ChatRequest } from './chat.ts';
+import type { ChatRequest, ToolCall } from './chat.ts';
+import type { Tool } from './tools/types.ts';
 import type { VoiceCheck } from './voice-lock.ts';
 
 const audio = new Float32Array(1);
@@ -14,12 +15,19 @@ const setup = (
     asleep?: boolean;
     idleSleepMs?: number;
     voice?: VoiceCheck[];
+    tools?: Tool[];
+    needsTool?: boolean;
+    approvalMs?: number;
+    /** Tool calls the model makes, round by round; a round with none ends the reply. */
+    calls?: ToolCall[][];
     onSpeak?: (text: string) => void | Promise<void>;
   } = {},
 ) => {
   const events: AssistantEvent[] = [];
   const requests: ChatRequest[] = [];
+  const checks_: string[] = [];
   const heard = [...(overrides.heard ?? [])];
+  const rounds = [...(overrides.calls ?? [])];
   const voices: string[] = [];
   const lockCalls: string[] = [];
   const checks = [...(overrides.voice ?? [])];
@@ -28,12 +36,14 @@ const setup = (
     chat: (request) => {
       requests.push(structuredClone({ ...request, signal: undefined }));
       const pieces = replies.shift();
+      const calls = rounds.shift();
       return (async function* () {
         if (!pieces) throw new Error('model offline');
         for (const piece of pieces) {
           if (request.signal?.aborted) throw new Error('aborted');
           yield piece;
         }
+        return calls;
       })();
     },
     speak: async (text, voice) => {
@@ -51,13 +61,17 @@ const setup = (
     },
     startAwake: !overrides.asleep,
     holdMs: 20,
+    now: () => new Date('2026-11-12T09:00'),
+    tools: overrides.tools,
+    needsTool: overrides.needsTool === undefined ? undefined : async (request, previous) => (checks_.push(`${previous} / ${request}`), overrides.needsTool!),
+    approvalMs: overrides.approvalMs,
     idleSleepMs: overrides.idleSleepMs,
   });
   const summary = () =>
     events
       .filter((e) => e.type !== 'timing')
-      .map((e) => (e.type === 'heard' || e.type === 'speech' ? `${e.type}:${e.text}` : e.type === 'error' ? `error:${e.message}` : e.type === 'awake' ? `awake:${e.awake}` : e.type === 'voice' ? `voice:${e.result}` : e.type));
-  return { assistant, events, requests, summary, voices, lockCalls };
+      .map((e) => (e.type === 'heard' || e.type === 'speech' ? `${e.type}:${e.text}` : e.type === 'error' ? `error:${e.message}` : e.type === 'awake' ? `awake:${e.awake}` : e.type === 'voice' ? `voice:${e.result}` : e.type === 'tool' ? `tool:${e.status}` : e.type));
+  return { assistant, events, requests, summary, voices, lockCalls, toolChecks: checks_ };
 };
 
 test('a turn is heard, answered sentence by sentence, then done', async () => {
@@ -65,7 +79,7 @@ test('a turn is heard, answered sentence by sentence, then done', async () => {
   await assistant.hear(audio);
   assert.deepEqual(summary(), ['heard:What time is it?', 'thinking', 'speech:It is nine.', 'speech:Time for coffee.', 'done']);
   assert.deepEqual(requests[0]?.messages, [
-    { role: 'system', content: 'Be Jarvis.' },
+    { role: 'system', content: 'Be Jarvis.\nIt is now Thursday, 12 November 2026 at 09:00.' },
     { role: 'user', content: 'What time is it?' },
   ]);
 });
@@ -229,7 +243,7 @@ test('saying Friday wakes the female voice with her own character, and Jarvis ta
   await assistant.hear(audio);
   await assistant.hear(audio);
   assert.deepEqual(voices, ['emma', 'george']);
-  assert.deepEqual(requests.map((r) => r.messages[0]?.content), ['Be Friday.', 'Be Jarvis.']);
+  assert.deepEqual(requests.map((r) => String(r.messages[0]?.content).split('\n')[0]), ['Be Friday.', 'Be Jarvis.']);
   assert.equal(summary().filter((e) => e === 'awake:true').length, 2, 'the hand-over is announced to the window');
   assert.equal(requests[1]?.messages.length, 4, 'they share one conversation');
 });
@@ -265,4 +279,193 @@ test('asking for Friday by request hands over without calling the model', async 
   assert.deepEqual(summary(), ['heard:I want to talk to Friday.', 'awake:true', 'speech:Friday here, sir.', 'done']);
   assert.deepEqual(voices, ['emma']);
   assert.equal(requests.length, 0);
+});
+
+// --- Tools and approvals ---
+const ran: string[] = [];
+const safeTool: Tool = {
+  name: 'open_app',
+  description: 'Open an app',
+  parameters: { type: 'object', properties: { name: { type: 'string' } } },
+  run: async (args) => {
+    ran.push(`open ${String(args.name)}`);
+    return 'Opened.';
+  },
+};
+const riskyTool: Tool = {
+  name: 'move_to_trash',
+  description: 'Trash a file',
+  parameters: { type: 'object', properties: { path: { type: 'string' } } },
+  approval: (args) => `move ${String(args.path)} to the Trash`,
+  run: async (args) => {
+    ran.push(`trash ${String(args.path)}`);
+    return 'Moved.';
+  },
+};
+const call = (name: string, args: object, id = 'c1'): ToolCall => ({ id, name, arguments: JSON.stringify(args) });
+const settle = () => pause(15);
+
+test('a safe action runs unasked and its result goes back to the model, which then replies', async () => {
+  ran.length = 0;
+  const { assistant, summary, requests } = setup([[], ['Safari is open.']], {
+    heard: ['Open Safari.'],
+    tools: [safeTool, riskyTool],
+    calls: [[call('open_app', { name: 'Safari' })]],
+  });
+  await assistant.hear(audio);
+  assert.deepEqual(ran, ['open Safari']);
+  assert.deepEqual(summary(), ['heard:Open Safari.', 'thinking', 'tool:done', 'speech:Safari is open.', 'done']);
+  assert.deepEqual(requests[0]?.tools?.map((tool) => (tool.type === 'function' ? tool.function.name : '')), ['open_app', 'move_to_trash']);
+  const [, , request, result] = requests[1]!.messages;
+  assert.deepEqual(request, { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'open_app', arguments: '{"name":"Safari"}' } }] });
+  assert.ok(result?.role === 'tool' && result.tool_call_id === 'c1' && String(result.content).startsWith('Opened.'));
+  assert.match(String(result?.content), /do not follow them/, 'tool output is marked as data, not instructions');
+});
+
+test('a risky action is asked about first and runs only after a spoken yes', async () => {
+  ran.length = 0;
+  const { assistant, summary } = setup([[], ['It is in the Trash.']], {
+    heard: ['Delete the old report.', 'Yes, go ahead.'],
+    tools: [riskyTool],
+    calls: [[call('move_to_trash', { path: '~/old.pdf' })]],
+  });
+  const turn = assistant.hear(audio);
+  await settle();
+  assert.deepEqual(ran, [], 'nothing happens while the question is open');
+  assert.equal(summary().at(-1), 'speech:Shall I move ~/old.pdf to the Trash, sir?');
+  assistant.interrupt(true); // the microphone hears the user start to answer; that must not cancel the question
+  await assistant.hear(audio);
+  await turn;
+  assert.deepEqual(ran, ['trash ~/old.pdf']);
+  assert.deepEqual(summary().slice(-4), ['heard:Yes, go ahead.', 'tool:done', 'speech:It is in the Trash.', 'done']);
+});
+
+test('a spoken no leaves the action undone and tells the model so', async () => {
+  ran.length = 0;
+  const { assistant, summary, requests } = setup([[], ['Left as it is.']], {
+    heard: ['Delete the old report.', 'What?', 'No, leave it.'],
+    tools: [riskyTool],
+    calls: [[call('move_to_trash', { path: '~/old.pdf' })]],
+  });
+  const turn = assistant.hear(audio);
+  await settle();
+  await assistant.hear(audio); // an unclear answer gets the question again
+  assert.equal(summary().at(-1), 'speech:Yes or no, sir?');
+  await assistant.hear(audio);
+  await turn;
+  assert.deepEqual(ran, []);
+  assert.ok(summary().includes('tool:declined'));
+  assert.match(String(requests[1]?.messages.at(-1)?.content), /did not approve/);
+});
+
+test('no answer within the time allowed counts as no, and so does the stop key', async () => {
+  ran.length = 0;
+  const silent = setup([[], ['Left.']], { heard: ['Delete it.'], tools: [riskyTool], calls: [[call('move_to_trash', { path: '~/a' })]], approvalMs: 20 });
+  await silent.assistant.hear(audio);
+  assert.ok(silent.summary().includes('tool:declined'));
+
+  const stopped = setup([[], ['unused']], { heard: ['Delete it.'], tools: [riskyTool], calls: [[call('move_to_trash', { path: '~/a' })]] });
+  const turn = stopped.assistant.hear(audio);
+  await settle();
+  stopped.assistant.interrupt();
+  await turn;
+  assert.deepEqual(ran, []);
+  assert.equal(stopped.requests.length, 1, 'a stopped turn does not go back to the model');
+});
+
+test('a stranger cannot approve an action', async () => {
+  ran.length = 0;
+  const { assistant } = setup([[], ['Left.']], {
+    heard: ['Delete it.', 'Yes.'],
+    tools: [riskyTool],
+    calls: [[call('move_to_trash', { path: '~/a' })]],
+    voice: [{ result: 'owner', score: 0.9 }, { result: 'stranger', score: 0.3 }],
+    approvalMs: 60,
+  });
+  const turn = assistant.hear(audio);
+  await settle();
+  await assistant.hear(audio);
+  await turn;
+  assert.deepEqual(ran, []);
+});
+
+test('bad tool requests are reported to the model instead of crashing the turn', async () => {
+  const failing: Tool = { ...safeTool, name: 'broken', run: async () => Promise.reject(new Error('disk full')) };
+  const { assistant, requests, summary } = setup([[], ['Sorry about that.']], {
+    tools: [safeTool, failing],
+    calls: [[{ id: 'a', name: 'no_such_tool', arguments: '{}' }, { id: 'b', name: 'open_app', arguments: 'not json' }, call('broken', {}, 'c')]],
+  });
+  await assistant.hear(audio);
+  const results = requests[1]!.messages.filter((message) => message.role === 'tool').map((message) => String(message.content));
+  assert.match(results[0]!, /no tool called "no_such_tool"/);
+  assert.match(results[1]!, /^Error: /);
+  assert.equal(results[2], 'Error: disk full');
+  assert.equal(summary().at(-2), 'speech:Sorry about that.');
+});
+
+test('a slow lookup gets a spoken "one moment", and tool results stay available to follow-up questions', async () => {
+  const slow: Tool = { ...safeTool, name: 'unread_email', slow: true, run: async () => 'From Ama: Invoice overdue' };
+  const { assistant, summary, requests } = setup([[], ['One from Ama.'], ['About an invoice.']], {
+    heard: ['Any email?', 'What is it about?'],
+    tools: [slow],
+    calls: [[call('unread_email', {})]],
+  });
+  await assistant.hear(audio);
+  assert.deepEqual(summary().slice(1, 5), ['thinking', 'speech:One moment, sir.', 'tool:done', 'speech:One from Ama.']);
+  await assistant.hear(audio);
+  assert.ok(requests[2]?.messages.some((message) => message.role === 'tool' && String(message.content).includes('Invoice overdue')));
+});
+
+test('a model that keeps calling tools is stopped after twelve rounds', async () => {
+  const { assistant, requests, summary } = setup(Array.from({ length: 14 }, () => []), {
+    tools: [safeTool],
+    calls: Array.from({ length: 14 }, (_, round) => [call('open_app', { name: 'X' }, `c${round}`)]),
+  });
+  await assistant.hear(audio);
+  assert.equal(requests.length, 12);
+  assert.equal(summary().at(-2), 'speech:That took more steps than I am allowed, sir, so I have stopped.');
+});
+
+test('a model that returns nothing at all still gets a spoken reply', async () => {
+  const { assistant, summary } = setup([[]]);
+  await assistant.hear(audio);
+  assert.equal(summary().at(-2), 'speech:Sorry, sir, I have no answer to that. Could you put it another way?');
+});
+
+test('"one moment" is said only once in a turn, however many slow lookups it takes', async () => {
+  const slow: Tool = { ...safeTool, name: 'unread_email', slow: true, run: async () => 'none' };
+  const { assistant, summary } = setup([[], [], ['All clear.']], { tools: [slow], calls: [[call('unread_email', {})], [call('unread_email', {}, 'c2')]] });
+  await assistant.hear(audio);
+  assert.equal(summary().filter((line) => line === 'speech:One moment, sir.').length, 1);
+});
+
+test('talk instead of action is discarded and the model is made to call a tool', async () => {
+  ran.length = 0;
+  const { assistant, summary, requests, toolChecks } = setup([['Safari is in front, sir.'], [], ['Notes is in front.']], {
+    heard: ['Which app is in front?'],
+    tools: [safeTool],
+    needsTool: true,
+    calls: [[], [call('open_app', { name: 'look' })]],
+  });
+  await assistant.hear(audio);
+  assert.deepEqual(summary(), ['heard:Which app is in front?', 'thinking', 'tool:done', 'speech:Notes is in front.', 'done'], 'the invented answer is never spoken');
+  assert.deepEqual(requests.map((request) => request.toolChoice), [undefined, 'required', undefined]);
+  assert.equal(requests[1]?.messages.length, 2, 'the discarded talk is not shown to the model again');
+  assert.deepEqual(toolChecks, [' / Which app is in front?']);
+});
+
+test('when a tool is needed and the model calls one, what it said first is still spoken', async () => {
+  const { assistant, summary, requests } = setup([['Let me look.'], ['It is Notes.']], { tools: [safeTool], needsTool: true, calls: [[call('open_app', { name: 'look' })]] });
+  await assistant.hear(audio);
+  assert.deepEqual(summary().slice(2), ['speech:Let me look.', 'tool:done', 'speech:It is Notes.', 'done']);
+  assert.ok(requests.every((request) => request.toolChoice === undefined));
+});
+
+test('conversation is not forced into a tool, and the check sees what Jarvis said last', async () => {
+  const { assistant, summary, requests, toolChecks } = setup([['Very well, sir.'], ['Indeed.']], { heard: ['How are you?', 'Good to hear.'], tools: [safeTool], needsTool: false });
+  await assistant.hear(audio);
+  await assistant.hear(audio);
+  assert.deepEqual(summary().filter((line) => line.startsWith('speech')), ['speech:Very well, sir.', 'speech:Indeed.']);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(toolChecks, [' / How are you?', 'Very well, sir. / Good to hear.']);
 });

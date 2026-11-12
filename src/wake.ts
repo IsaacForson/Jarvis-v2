@@ -38,3 +38,11 @@ export const isSleepCommand = (text: string) => text.trim().split(/\s+/).length 
 export const isLearnVoiceCommand = (text: string) => short(text) && LEARN_VOICE.test(text);
 /** "Forget my voice": answer to anyone again. */
 export const isForgetVoiceCommand = (text: string) => short(text) && FORGET_VOICE.test(text);
+
+const NO = /\b(?:no|nope|don't|do not|cancel|stop|never ?mind|negative|leave it|not now)\b/i;
+const YES = /\b(?:yes|yeah|yep|yup|sure|go ahead|do it|please do|go on|confirm(?:ed)?|okay|ok|proceed|approved?|absolutely|of course)\b/i;
+
+/** The answer to a yes-or-no question: true, false, or undefined when it is neither. "No" wins if both are heard. */
+export function parseYesNo(text: string): boolean | undefined {
+  return NO.test(text) ? false : YES.test(text) ? true : undefined;
+}

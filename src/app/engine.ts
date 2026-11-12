@@ -6,8 +6,9 @@ import { KokoroTTS } from 'kokoro-js';
 import { Assistant } from '../assistant.ts';
 import { createChat } from '../chat.ts';
 import { KeyPool, parseKeys } from '../key-pool.ts';
-import { SPOKEN } from '../models.ts';
+import { SPOKEN, TIERS } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
+import { createTools } from '../tools/index.ts';
 import { VoiceLock } from '../voice-lock.ts';
 import { encodeWav, resample } from '../wav.ts';
 import { startWhisper } from '../whisper.ts';
@@ -15,6 +16,7 @@ import type { ToEngine, ToRenderer } from './messages.ts';
 
 const SPEED = 1.1; // the stock pace sounded slightly slow
 const MIC_RATE = 16_000;
+const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
 const send = (message: ToRenderer) => process.parentPort.postMessage(message);
 
 try {
@@ -69,9 +71,38 @@ try {
     whisper.transcribe(new Blob([encodeWav(silence, MIC_RATE)])),
   ]);
 
+  const chat = createChat(pool);
+  // One question to the model that reads images (the medium model), with a picture attached.
+  const see = async (jpegBase64: string, prompt: string, maxTokens: number, system?: string) => {
+    let answer = '';
+    const content = [{ type: 'text' as const, text: prompt }, { type: 'image_url' as const, image_url: { url: `data:image/jpeg;base64,${jpegBase64}` } }];
+    const messages = [...(system ? [{ role: 'system' as const, content: system }] : []), { role: 'user' as const, content }];
+    for await (const piece of chat({ model: TIERS.medium.model, extraBody: TIERS.medium.extraBody, maxTokens, timeoutMs: 30_000, messages })) answer += piece;
+    return answer;
+  };
+  const hands = createTools({
+    browserProfileDir: join(dataDir, 'browser'),
+    accessibilityHelper: join(root, 'dist/ax'),
+    describeImage: async (jpegBase64, question) => (await see(jpegBase64, `${question} Answer in plain sentences.`, 500)) || 'I could not make out the screen.',
+    locateOnScreen: async (jpegBase64, target) => {
+      const reply = await see(jpegBase64, `Locate ${target}. Output only {"x":N,"y":N}: its centre, with x and y from 0 to 1000 across the image width and height.`, 40, 'You locate things in screenshots. Output only JSON, no words.');
+      const match = /x"?\s*:\s*([\d.]+)[^\d]+y"?\s*:\s*([\d.]+)/.exec(reply);
+      return match ? { x: Number(match[1]), y: Number(match[2]) } : undefined;
+    },
+  });
+
   const assistant = new Assistant({
     transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)])),
-    chat: createChat(pool),
+    chat,
+    tools: hands.tools,
+    // The small fast model gives a one-word second opinion on whether a request needs a tool. Tested
+    // 12 Nov 2026: 17 of 18 sample requests right in about 0.4 s; the larger models were worse at it.
+    needsTool: async (request, previous) => {
+      let verdict = '';
+      const router = SPOKEN[1]!;
+      for await (const piece of chat({ model: router.model, extraBody: router.extraBody, maxTokens: 4, timeoutMs: 2500, messages: [{ role: 'system', content: ROUTER }, { role: 'user', content: `${previous ? `The assistant just said: "${previous.slice(-300)}"\n` : ''}Request: "${request}"` }] })) verdict += piece;
+      return /tool/i.test(verdict);
+    },
     speak,
     emit: send,
     // A model that has not started answering within 4 s is given up on, and the next one is asked.
@@ -86,15 +117,22 @@ try {
     else if (data.type === 'user-speech') assistant.userSpeaking(data.active);
     else if (data.type === 'forget-voice') voiceLock.forget();
     else if (data.type === 'selftest') {
-      const question = await speak('Jarvis, are you there?');
+      const question = await speak(data.question || 'Jarvis, are you there?');
       void assistant.hear(resample(question.samples, question.sampleRate, MIC_RATE));
     } else if (data.type === 'shutdown') {
       whisper.stop();
+      // Give the browser two seconds to close cleanly; it also exits by itself when this process dies.
+      await Promise.race([hands.close(), new Promise((resolve) => setTimeout(resolve, 2000))]);
       // A normal exit crashes inside onnxruntime's cleanup ("mutex lock failed"); nothing here needs flushing.
       process.kill(process.pid, 'SIGKILL');
     }
   });
   send({ type: 'ready' });
+
+  // Read slow sources ahead of time (the Calendar app takes up to a minute), now and every ten minutes.
+  const readAhead = () => void hands.refresh().catch((error: unknown) => console.error('[jarvis] calendar read-ahead failed:', error instanceof Error ? error.message : error));
+  readAhead();
+  setInterval(readAhead, 10 * 60_000).unref();
 } catch (error) {
   send({ type: 'fatal', message: error instanceof Error ? error.message : String(error) });
 }

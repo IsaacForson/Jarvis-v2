@@ -38,6 +38,8 @@ test('the activity log explains events in plain words and flags problems', () =>
     { type: 'timing', turn: 1, transcriptMs: 250, firstWordsMs: 1150, firstAudioMs: 1800 },
     { type: 'error', turn: 1, message: 'Request timed out.' },
     { type: 'awake', awake: false, persona: 'friday' },
+    { type: 'tool', turn: 2, status: 'asking', detail: 'Asking permission to move ~/a to the Trash ({"path":"~/a"})' },
+    { type: 'tool', turn: 2, status: 'failed', detail: 'move to trash failed: no such file' },
     { type: 'thinking', turn: 2 },
   ]);
   assert.deepEqual(activity.map((entry) => `${entry.alert ? '!' : ' '} ${entry.text}`), [
@@ -47,8 +49,10 @@ test('the activity log explains events in plain words and flags problems', () =>
     '  Replied in 1.8 s (heard 0.3 s, model 0.9 s)',
     '! Request timed out.',
     '  Went to sleep',
+    '  Asking permission to move ~/a to the Trash ({"path":"~/a"})',
+    '! move to trash failed: no such file',
   ]);
-  assert.deepEqual(activity.map((entry) => entry.at), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(activity.map((entry) => entry.at), [0, 1, 2, 3, 4, 5, 6, 7]);
 });
 
 test('both lists keep only the most recent 200 lines', () => {
