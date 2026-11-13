@@ -1,9 +1,12 @@
 // Jarvis's hands inside other apps, through the macOS accessibility interface.
-// Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE... | click X Y | at X Y | screen
-// Every command but the last three takes an optional --app NAME.
+// Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE...
+//        | click X Y [right|double] | drag X1 Y1 X2 Y2 | scroll X Y DOWN RIGHT | at X Y | screen
+//        | pdftext FILE | frontwindow
+// Every command before click takes an optional --app NAME.
 // Prints JSON on success; prints a plain sentence to stderr and exits 1 on failure.
 import ApplicationServices
 import Cocoa
+import PDFKit
 
 func fail(_ message: String) -> Never {
   FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
@@ -40,11 +43,15 @@ func target(_ name: String?) -> NSRunningApplication {
     return front
   }
   let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-  guard let app = running.first(where: { $0.localizedName?.lowercased() == name.lowercased() })
-    ?? running.first(where: { $0.localizedName?.lowercased().contains(name.lowercased()) ?? false })
-  else { fail("\(name) is not running. Open it first.") }
-  bringToFront(app)
-  return app
+  if let app = running.first(where: { $0.localizedName?.lowercased() == name.lowercased() })
+    ?? running.first(where: { $0.localizedName?.lowercased().contains(name.lowercased()) ?? false }) {
+    bringToFront(app)
+    return app
+  }
+  // System dialogs (permission requests, "Are you sure you want to open it?") belong to background
+  // helpers such as UserNotificationCenter or CoreServicesUIAgent; their windows are used where they are.
+  if let helper = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName?.lowercased() == name.lowercased() }) { return helper }
+  fail("\(name) is not running. Open it first.")
 }
 
 /// Brings an app to the front and waits until it is. A background program's own request to activate
@@ -134,11 +141,43 @@ func resolve(_ app: NSRunningApplication, _ path: String, _ role: String) -> AXU
   return element
 }
 
-func click(at point: CGPoint) {
-  for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
-    Thread.sleep(forTimeInterval: 0.05)
+func click(at point: CGPoint, right: Bool = false, count: Int = 1) {
+  let (down, up, button): (CGEventType, CGEventType, CGMouseButton) = right ? (.rightMouseDown, .rightMouseUp, .right) : (.leftMouseDown, .leftMouseUp, .left)
+  for n in 1...count {
+    for type in [down, up] {
+      let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)
+      event?.setIntegerValueField(.mouseEventClickState, value: Int64(n))
+      event?.post(tap: .cghidEventTap)
+      Thread.sleep(forTimeInterval: 0.05)
+    }
   }
+}
+
+func drag(from start: CGPoint, to end: CGPoint) {
+  let post = { (type: CGEventType, point: CGPoint) in
+    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+  }
+  post(.mouseMoved, start)
+  Thread.sleep(forTimeInterval: 0.05)
+  post(.leftMouseDown, start)
+  for step in 1...20 {
+    let t = CGFloat(step) / 20
+    post(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t))
+    Thread.sleep(forTimeInterval: 0.015)
+  }
+  post(.leftMouseUp, end)
+}
+
+/// Scrolls at a point; positive `down` scrolls the content down, as the mouse wheel would.
+func scroll(at point: CGPoint, down: Int32, right: Int32) {
+  CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+  Thread.sleep(forTimeInterval: 0.05)
+  CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: -down, wheel2: -right, wheel3: 0)?.post(tap: .cghidEventTap)
+}
+
+func onScreen(_ x: String, _ y: String) -> CGPoint {
+  guard let x = Double(x), let y = Double(y), let screen = NSScreen.main?.frame, x >= 0, y >= 0, x <= screen.width, y <= screen.height else { fail("That point is not on the screen.") }
+  return CGPoint(x: x, y: y)
 }
 
 func press(_ element: AXUIElement) {
@@ -227,6 +266,24 @@ func chooseMenu(_ app: NSRunningApplication, _ route: [String]) {
   guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { fail("That menu item could not be chosen.") }
 }
 
+// Reading a PDF's text needs no accessibility permission, so it is answered before that check.
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "pdftext" {
+  guard let document = PDFDocument(url: URL(fileURLWithPath: CommandLine.arguments[2])) else { fail("That PDF could not be opened.") }
+  print(document.string ?? "")
+  exit(0)
+}
+
+// The window number of the front app's main window, for a screenshot of just that window.
+if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "frontwindow" {
+  guard let front = NSWorkspace.shared.frontmostApplication,
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+        let window = windows.first(where: { ($0[kCGWindowOwnerPID as String] as? pid_t) == front.processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0 }),
+        let number = window[kCGWindowNumber as String] as? Int
+  else { fail("The app in front has no window on screen.") }
+  print(String(data: try! JSONSerialization.data(withJSONObject: ["id": number, "app": front.localizedName ?? ""]), encoding: .utf8)!)
+  exit(0)
+}
+
 guard AXIsProcessTrusted() else {
   fail("I am not allowed to control other apps. Accessibility must be switched on, in System Settings under Privacy and Security, for the app that started me.")
 }
@@ -270,9 +327,18 @@ case "menu" where arguments.count >= 3:
   requireFront(app)
   chooseMenu(app, Array(arguments.dropFirst()))
   print("{}")
-case "click" where arguments.count == 3:
-  guard let x = Double(arguments[1]), let y = Double(arguments[2]), let screen = NSScreen.main?.frame, x >= 0, y >= 0, x <= screen.width, y <= screen.height else { fail("That point is not on the screen.") }
-  click(at: CGPoint(x: x, y: y))
+case "click" where arguments.count == 3 || arguments.count == 4:
+  let how = arguments.count == 4 ? arguments[3] : "left"
+  click(at: onScreen(arguments[1], arguments[2]), right: how == "right", count: how == "double" ? 2 : 1)
+  Thread.sleep(forTimeInterval: 0.1)
+  print("{}")
+case "drag" where arguments.count == 5:
+  drag(from: onScreen(arguments[1], arguments[2]), to: onScreen(arguments[3], arguments[4]))
+  Thread.sleep(forTimeInterval: 0.1)
+  print("{}")
+case "scroll" where arguments.count == 5:
+  guard let down = Int32(arguments[3]), let right = Int32(arguments[4]) else { fail("Scroll amounts must be whole numbers.") }
+  scroll(at: onScreen(arguments[1], arguments[2]), down: down, right: right)
   Thread.sleep(forTimeInterval: 0.1)
   print("{}")
 case "at" where arguments.count == 3:
@@ -293,5 +359,5 @@ case "screen":
   guard let screen = NSScreen.main?.frame else { fail("No screen found.") }
   print("{\"width\":\(Int(screen.width)),\"height\":\(Int(screen.height))}")
 default:
-  fail("Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE... | click X Y | at X Y | screen")
+  fail("Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE... | click X Y [right|double] | drag X1 Y1 X2 Y2 | scroll X Y DOWN RIGHT | at X Y | screen")
 }

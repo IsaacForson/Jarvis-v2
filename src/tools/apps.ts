@@ -113,7 +113,7 @@ export function appTools(helper: (args: string[]) => Promise<string>, open: (app
     {
       name: 'app_read',
       description:
-        'Read the front window of a Mac app: its text and a numbered list of its buttons, fields and other controls. Give an app name to open it and bring it to the front; without one, the app already in front is read. Use this before app_click or app_type, and again whenever the window changes.',
+        'Read the front window of a Mac app: its text and a numbered list of its buttons, fields and other controls. Give an app name to open it and bring it to the front; without one, the app already in front is read. Use this before app_click or app_type, and again whenever the window changes. System dialogs, such as a permission request or "Are you sure you want to open it?", belong to UserNotificationCenter or CoreServicesUIAgent: read those by name.',
       parameters: { type: 'object', properties: { app: { type: 'string', description: 'The app name, e.g. "Notes" or "Finder"' } } },
       slow: true,
       run: async (args) => {

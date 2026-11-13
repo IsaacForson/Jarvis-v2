@@ -14,6 +14,11 @@ export type ChatRequest = {
   fallbacks?: Pick<ChatRequest, 'model' | 'extraBody'>[];
   /** How long to wait for a model to start answering before trying the next. Default 8 s. */
   timeoutMs?: number;
+  /**
+   * A model that has not started answering after this long gets company: the next one on the list is
+   * asked as well, and whichever starts first is used. Cuts the wait when a model stalls.
+   */
+  hedgeMs?: number;
   /** Actions the model may ask for. What it asks for is the stream's return value. */
   tools?: OpenAI.Chat.ChatCompletionTool[];
   /** 'required' makes the model call a tool instead of answering in words. */
@@ -37,7 +42,7 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
     return client;
   };
 
-  const open = async (request: ChatRequest) => {
+  const openOne = async (request: ChatRequest) => {
     const candidates = [request, ...(request.fallbacks ?? [])];
     let failures = 0;
     // Ends when a key answers, or when pool.next() throws because every key is cooling.
@@ -75,6 +80,28 @@ export function createChat(pool: KeyPool, baseURL: string = NVIDIA_BASE_URL) {
         }
         throw error;
       }
+    }
+  };
+
+  const open = async (request: ChatRequest) => {
+    const [backup, ...rest] = request.fallbacks ?? [];
+    if (!request.hedgeMs || !backup) return openOne(request);
+    const controllers = [new AbortController(), new AbortController()];
+    const signal = (index: number) => (request.signal ? AbortSignal.any([request.signal, controllers[index]!.signal]) : controllers[index]!.signal);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const first = openOne({ ...request, signal: signal(0) }).then((stream) => ({ stream, index: 0 }));
+    const second = new Promise<void>((resolve) => (timer = setTimeout(resolve, request.hedgeMs)))
+      .then(() => openOne({ ...request, ...backup, fallbacks: rest, signal: signal(1) }))
+      .then((stream) => ({ stream, index: 1 }));
+    second.catch(() => {}); // the loser is aborted, which rejects it
+    try {
+      const winner = await Promise.any([first, second]);
+      controllers[1 - winner.index]!.abort();
+      return winner.stream;
+    } catch {
+      return (await first).stream; // both failed: report the first model's reason
+    } finally {
+      clearTimeout(timer);
     }
   };
 

@@ -89,5 +89,11 @@ export function createCalendar(fetch: Fetch = fromCalendarApp, now: () => number
       return describeEvents(eventsInWindow(raw, start, end));
     },
   };
-  return { tool, refresh };
+  /** The rest of today's events, from the copy kept by `refresh` (read once if there is none yet). */
+  const upcoming = async (): Promise<CalendarEvent[]> => {
+    const start = new Date(now());
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+    return eventsInWindow(copy?.raw ?? (await refresh()), start, end);
+  };
+  return { tool, refresh, upcoming };
 }

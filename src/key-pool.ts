@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+
 export const COOLDOWN_MS = 60_000;
 
 export class AllKeysCoolingError extends Error {
@@ -16,6 +18,15 @@ export function parseKeys(value: string | undefined): string[] {
   return [...new Set((value ?? '').split(/[\s,]+/).filter(Boolean))];
 }
 
+/** The keys as `npm run keys-to-keychain` stored them in the macOS Keychain, or '' if they are not there. */
+export function keychainKeys(): string {
+  try {
+    return execFileSync('/usr/bin/security', ['find-generic-password', '-s', 'Jarvis', '-a', 'nvidia-api-keys', '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+}
+
 /** Hands out keys in turn, one request each, skipping any key that reported its limit. */
 export class KeyPool {
   readonly #keys: string[];
@@ -24,7 +35,7 @@ export class KeyPool {
   #cursor = 0;
 
   constructor(keys: string[], now: () => number = Date.now) {
-    if (keys.length === 0) throw new Error('No API keys: set NVIDIA_API_KEYS in .env (see .env.example)');
+    if (keys.length === 0) throw new Error('No API keys: set NVIDIA_API_KEYS in .env (see .env.example), or store them with npm run keys-to-keychain');
     this.#keys = [...keys];
     this.#readyAt = keys.map(() => 0);
     this.#now = now;

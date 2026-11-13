@@ -2,6 +2,7 @@ import type OpenAI from 'openai';
 import type { ChatRequest, ToolCall } from './chat.ts';
 import { cleanTranscript, sentences } from './sentences.ts';
 import type { Persona, PersonaName } from './persona.ts';
+import { DELETION } from './tools/rules.ts';
 import type { Args, Tool } from './tools/types.ts';
 import type { VoiceCheck, VoiceLock } from './voice-lock.ts';
 import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake, parseYesNo } from './wake.ts';
@@ -31,7 +32,7 @@ export type AssistantDeps = {
   chat(request: ChatRequest): AsyncGenerator<string, ToolCall[] | void>;
   speak(text: string, voice: string): Promise<Speech>;
   emit(event: AssistantEvent): void;
-  model: Pick<ChatRequest, 'model' | 'extraBody' | 'fallbacks' | 'timeoutMs'>;
+  model: Pick<ChatRequest, 'model' | 'extraBody' | 'fallbacks' | 'timeoutMs' | 'hedgeMs'>;
   personas: Record<PersonaName, Persona>;
   /** When given and enrolled, only the owner's voice is answered. */
   voiceLock?: Pick<VoiceLock, 'check' | 'beginEnrolment' | 'forget'>;
@@ -52,6 +53,10 @@ export type AssistantDeps = {
   needsTool?(request: string, previous: string): Promise<boolean>;
   /** How long a yes-or-no question waits for its answer before the action is dropped. */
   approvalMs?: number;
+  /** Act without asking first, except deleting. Payments, passwords and card numbers are still refused. */
+  autonomous?: boolean;
+  /** More instructions, read afresh every turn: what memory holds about the user. */
+  context?: () => string;
   now?: () => Date;
 };
 
@@ -61,7 +66,7 @@ type Turn = { id: number; abort: AbortController; startedAt: number; transcriptM
 /** Whole exchanges are kept or dropped together, so a tool's result never loses the request it answers. */
 const MAX_EXCHANGES = 10;
 /** A reply may go back and forth with tools this many times before Jarvis gives up on it. */
-const MAX_ROUNDS = 12;
+const MAX_ROUNDS = 40;
 const APOLOGY = 'Sorry, sir, I could not reach my brain just now. Please try again.';
 // Whisper ends a finished sentence with a full stop, question mark or exclamation mark, and a trailing-off one with "...".
 const FINISHED = /[.!?]["')]*$/;
@@ -82,6 +87,9 @@ export class Assistant {
   /** Words heard but not yet answered: a sentence that trailed off, or a question the user talked over. */
   #carry = '';
   #holdTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Something was forgotten during the turn under way, so it must not be kept either. */
+  #forgetting = false;
+  #userSpeaking = false;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(deps: AssistantDeps) {
@@ -101,13 +109,57 @@ export class Assistant {
     this.#cancel();
   }
 
+  /** Drops the conversation held in this session, including the turn under way, once that turn ends. */
+  forgetConversation(): void {
+    this.#history = [];
+    this.#forgetting = true;
+  }
+
   /** The microphone heard speech start (true) or decided it was only a noise (false). */
   userSpeaking(active: boolean): void {
+    this.#userSpeaking = active;
     clearTimeout(this.#holdTimer);
     if (!active) this.#armHold();
   }
 
+  /** Mid-reply, waiting on a yes or no, or the user is talking: speaking up now would cut across him. */
+  get busy(): boolean {
+    return this.#answering !== undefined || this.#approval !== undefined || this.#carry !== '' || this.#userSpeaking;
+  }
+
+  /**
+   * Speaks up unasked (an alarm, an urgent email, a finished job) and stays awake for the reply.
+   * `note` is kept in the conversation but not spoken, such as which reminder this was. False when busy: try later.
+   */
+  async announce(text: string, note?: string): Promise<boolean> {
+    if (this.busy) return false;
+    const turn = this.#begin();
+    if (!this.#awake) this.#setAwake(true);
+    await this.#run(turn, async () => {
+      const spoken: string[] = [];
+      for await (const sentence of sentences((async function* () { yield text; })())) {
+        if (!(await this.#say(turn, sentence))) break;
+        spoken.push(sentence);
+      }
+      if (!spoken.length) return;
+      const context: Message = { role: 'user', content: `(Nothing was said; you spoke up on your own.${note ? ` ${note}` : ''})` };
+      const said: Message = { role: 'assistant', content: spoken.join(' ') };
+      this.#history = [...this.#history, [context, said]].slice(-MAX_EXCHANGES);
+    });
+    return true;
+  }
+
+  /** Runs a whole turn unasked, from an instruction instead of speech, such as the morning briefing. False when busy. */
+  async initiate(instruction: string): Promise<boolean> {
+    if (this.busy) return false;
+    const turn = this.#begin();
+    if (!this.#awake) this.#setAwake(true);
+    await this.#run(turn, () => this.#answer(turn, `(Nothing was said; this is scheduled.) ${instruction}`));
+    return true;
+  }
+
   async hear(audio: Float32Array): Promise<void> {
+    this.#userSpeaking = false;
     if (this.#approval) return this.#hearAnswer(this.#approval, audio);
     clearTimeout(this.#holdTimer);
     this.#cancel();
@@ -247,7 +299,7 @@ export class Assistant {
       const args: unknown = JSON.parse(call.arguments || '{}');
       if (typeof args !== 'object' || args === null || Array.isArray(args)) throw new Error('the arguments must be a JSON object');
       const action = tool.approval?.(args as Args);
-      if (action) {
+      if (action && (!this.#deps.autonomous || DELETION.test(`${action} ${call.arguments}`))) {
         // The spoken question is short; the panel shows exactly what would run.
         report('asking', `Asking permission to ${action} (${call.arguments.slice(0, 600)})`);
         if (!(await this.#approve(turn, action))) {
@@ -272,14 +324,15 @@ export class Assistant {
   }
 
   async #answer(turn: Turn, text: string): Promise<void> {
-    const { chat, emit, model, personas, tools = [], needsTool, now = () => new Date() } = this.#deps;
+    const { chat, emit, model, personas, tools = [], needsTool, context, now = () => new Date() } = this.#deps;
     const elapsed = () => performance.now() - turn.startedAt;
     const live = () => !turn.abort.signal.aborted;
     const answering = { question: text, spoken: false };
     this.#answering = answering;
     const question: Message = { role: 'user', content: text };
     const clock = now().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' });
-    const messages: Message[] = [{ role: 'system', content: `${personas[this.#persona].prompt}\nIt is now ${clock}.` }, ...this.#history.flat(), question];
+    const extra = context?.();
+    const messages: Message[] = [{ role: 'system', content: `${personas[this.#persona].prompt}\nIt is now ${clock}.${extra ? `\n${extra}` : ''}` }, ...this.#history.flat(), question];
     const exchange: Message[] = [question];
     const definitions = tools.map((tool) => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
     let spoken = '';
@@ -294,7 +347,7 @@ export class Assistant {
 
     try {
       for (let round = 0; round < MAX_ROUNDS && live() && !finished; round++) {
-        const stream = chat({ ...model, maxTokens: 400, signal: turn.abort.signal, messages, tools: definitions, ...(force ? { toolChoice: 'required' as const } : {}) });
+        const stream = chat({ ...model, maxTokens: 1000, signal: turn.abort.signal, messages, tools: definitions, ...(force ? { toolChoice: 'required' as const } : {}) });
         const checking = force ? undefined : mustAct;
         mustAct = undefined; // only the first reply is checked
         force = false;
@@ -363,7 +416,8 @@ export class Assistant {
       if (this.#answering === answering) this.#answering = undefined;
       // A finished exchange is recorded whole, tool results included, so follow-up questions can refer
       // to them. An interrupted one keeps only the question and what was actually said aloud.
-      if (finished) this.#history.push(exchange);
+      if (this.#forgetting) this.#forgetting = false;
+      else if (finished) this.#history.push(exchange);
       else if (spoken) this.#history.push([question, { role: 'assistant', content: spoken.trim() }]);
       this.#history = this.#history.slice(-MAX_EXCHANGES);
     }

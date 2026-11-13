@@ -106,6 +106,19 @@ test('a model that stalls or is missing is replaced by the next one on the list'
   assert.equal(requests[2]?.body.effort, 'low', "the backup model's own settings are sent, not the first model's");
 });
 
+test('a slow model is joined by the next one, and the first to answer is used', async () => {
+  const started = performance.now();
+  const { text } = await ask(['good'], undefined, { model: 'stalled', timeoutMs: 5000, hedgeMs: 50, fallbacks: [{ model: 'backup' }] });
+  assert.equal(text, 'Good morning.');
+  assert.ok(performance.now() - started < 2000, 'did not wait for the stalled model to time out');
+  assert.deepEqual(requests.map((r) => r.body.model), ['stalled', 'backup']);
+});
+
+test('a model that answers in time is not joined', async () => {
+  await ask(['good'], undefined, { hedgeMs: 2000, fallbacks: [{ model: 'backup' }] });
+  assert.deepEqual(requests.map((r) => r.body.model), ['m']);
+});
+
 test('tool calls are assembled from their fragments and returned when the stream ends', async () => {
   requests.length = 0;
   const chat = createChat(new KeyPool(['good']), baseURL);

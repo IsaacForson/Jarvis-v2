@@ -3,6 +3,9 @@ import { clip, integer, type Tool } from './types.ts';
 
 type RawMail = { id: number; from: string; subject: string; received: string };
 
+/** Every unread email in the inbox, as the Mail app reports it. */
+export const unreadMail = async (): Promise<RawMail[]> => JSON.parse(await osascript(UNREAD, { javascript: true })) as RawMail[];
+
 // Runs inside the Mail app; one request per property for the whole unread list.
 const UNREAD = `
   const unread = Application('Mail').inbox.messages.whose({ readStatus: false });
@@ -12,6 +15,10 @@ const UNREAD = `
 const BODY = (id: number) => `
   const found = Application('Mail').inbox.messages.whose({ id: ${id} })();
   found.length ? JSON.stringify({ from: found[0].sender(), subject: found[0].subject(), body: found[0].content() }) : 'null';`;
+
+/** The text of one inbox email, or '' if it is gone. Reading it here does not mark it as read. */
+export const mailBody = async (id: number): Promise<string> =>
+  ((JSON.parse(await osascript(BODY(id), { javascript: true })) as { body: string } | null)?.body ?? '').replace(/\s+/g, ' ').trim();
 
 const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 
@@ -31,7 +38,7 @@ export const mailTools: Tool[] = [
     slow: true,
     run: async (args) => {
       const limit = integer(args, 'limit', { min: 1, max: 30, fallback: 10 });
-      return describeUnread(JSON.parse(await osascript(UNREAD, { javascript: true })) as RawMail[], limit);
+      return describeUnread(await unreadMail(), limit);
     },
   },
   {

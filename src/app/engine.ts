@@ -1,7 +1,7 @@
 // The speech-and-thinking process. It runs apart from the window so heavy work never stalls the orb.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AutoModelForXVector, AutoProcessor } from '@huggingface/transformers';
+import { AutoModelForXVector, AutoProcessor, pipeline } from '@huggingface/transformers';
 import { KokoroTTS } from 'kokoro-js';
 import { Assistant } from '../assistant.ts';
 import { createChat } from '../chat.ts';
@@ -9,6 +9,14 @@ import { KeyPool, parseKeys } from '../key-pool.ts';
 import { SPOKEN, TIERS } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
 import { createTools } from '../tools/index.ts';
+import type { Tool } from '../tools/types.ts';
+import { factsPrompt, Memory, memoryTools } from '../tools/memory.ts';
+import { exec } from '../tools/exec.ts';
+import { Initiative, type Mail } from '../initiative.ts';
+import { runJob } from '../jobs.ts';
+import { createWaker } from '../power.ts';
+import { recentFailures } from '../tools/deploys.ts';
+import { Tasks } from '../tasks.ts';
 import { VoiceLock } from '../voice-lock.ts';
 import { encodeWav, resample } from '../wav.ts';
 import { startWhisper } from '../whisper.ts';
@@ -16,7 +24,17 @@ import type { ToEngine, ToRenderer } from './messages.ts';
 
 const SPEED = 1.1; // the stock pace sounded slightly slow
 const MIC_RATE = 16_000;
-const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
+const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TOOL also when the user tells a lasting fact or preference about himself, the people in his life or his projects, or asks what was said in an earlier conversation, or asks to forget something, or wants a reminder, alarm or repeating task set, changed, snoozed, cancelled or marked done, or wants something done later or regularly, or asks how a job went, or asks about the weather, or replies to a reminder. Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
+const URGENCY = `You sort email for a busy person. Reply with one word. Reply URGENT only if this email needs his attention within hours: a real person waiting on him or asking for something, a deadline today, something broken, a security alert about his own accounts, or an interview or meeting invitation. Reply NOT for newsletters, promotions, marketing, social media, automatic confirmations and status updates (such as "your application was received" or "application update"), and other routine notifications.`;
+// large-v3-turbo hears accents and names far better than small.en, for about 0.7 s more per sentence
+// (measured 12 Nov 2026 on this Mac: 970 ms against 270 ms). JARVIS_WHISPER_MODEL picks another file.
+const speechModel = (root: string) => {
+  const chosen = process.env.JARVIS_WHISPER_MODEL;
+  if (chosen) return join(root, chosen);
+  const turbo = join(root, 'models/ggml-large-v3-turbo-q5_0.bin');
+  return existsSync(turbo) ? turbo : join(root, 'models/ggml-small.en.bin');
+};
+const SUMMARY = `Rewrite this report as what a personal assistant would say aloud to his employer: two or three short plain sentences with the outcome and the key figures. No preamble, lists, headings, markdown or symbols; write "dollars", not "$".`;
 const send = (message: ToRenderer) => process.parentPort.postMessage(message);
 
 try {
@@ -24,14 +42,18 @@ try {
   const dataDir = process.env.JARVIS_DATA;
   if (!root || !dataDir) throw new Error('JARVIS_ROOT and JARVIS_DATA must be set');
   const pool = new KeyPool(parseKeys(process.env.NVIDIA_API_KEYS));
+  // Every program Jarvis starts (shell commands, scripts, Chrome) inherits this environment; the keys must not be in it.
+  delete process.env.NVIDIA_API_KEYS;
   const SPEAKER_MODEL = 'Xenova/wavlm-base-plus-sv';
-  const [tts, whisper, speakerProcessor, speakerModel] = await Promise.all([
+  const [tts, whisper, speakerProcessor, speakerModel, embedder] = await Promise.all([
     // fp32 measured 2.5x faster than the smaller q8 build on this Mac (M2 Pro).
     KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'fp32', device: 'cpu' }),
-    startWhisper({ model: join(root, 'models/ggml-small.en.bin'), vocabulary: 'Jarvis, Friday, Forson.' }),
+    startWhisper({ model: speechModel(root), vocabulary: 'Jarvis, Friday, Forson.' }),
     AutoProcessor.from_pretrained(SPEAKER_MODEL),
     // The 8-bit build told voices apart as well as the full one in testing, at a quarter of the size.
     AutoModelForXVector.from_pretrained(SPEAKER_MODEL, { dtype: 'q8', device: 'cpu' }),
+    // For memory search by meaning: small (23 MB) and quick (about 2 ms a line on this Mac).
+    pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'q8', device: 'cpu' }),
   ]);
   process.on('exit', whisper.stop);
   if (whisper.pid) send({ type: 'helper', pid: whisper.pid });
@@ -50,16 +72,19 @@ try {
     },
     load: () => {
       try {
-        const saved: unknown = JSON.parse(readFileSync(printFile, 'utf8'));
-        return Array.isArray(saved) && saved.every((value) => typeof value === 'number') ? saved : undefined;
+        // Older files hold the voiceprint alone; newer ones hold it with its own pass mark.
+        const saved = JSON.parse(readFileSync(printFile, 'utf8')) as number[] | { print?: unknown; threshold?: unknown };
+        const print = Array.isArray(saved) ? saved : saved.print;
+        if (!Array.isArray(print) || !print.every((value) => typeof value === 'number')) return undefined;
+        return { print, ...(!Array.isArray(saved) && typeof saved.threshold === 'number' ? { threshold: saved.threshold } : {}) };
       } catch {
         return undefined; // no voice enrolled yet
       }
     },
-    save: (print) => {
-      if (!print) return rmSync(printFile, { force: true });
+    save: (voice) => {
+      if (!voice) return rmSync(printFile, { force: true });
       mkdirSync(dataDir, { recursive: true });
-      writeFileSync(printFile, JSON.stringify(print), { mode: 0o600 });
+      writeFileSync(printFile, JSON.stringify(voice), { mode: 0o600 });
     },
   });
 
@@ -91,24 +116,124 @@ try {
     },
   });
 
+  mkdirSync(dataDir, { recursive: true });
+  const memoryFile = join(dataDir, 'memory.db');
+  const memory = new Memory(memoryFile, { embed: async (text) => (await embedder(text, { pooling: 'mean', normalize: true })).data as Float32Array });
+  chmodSync(memoryFile, 0o600);
+  // A copy a day of everything remembered, the last week's kept. Forgetting stays forgotten after a week.
+  const backUp = () => {
+    try {
+      const copy = memory.backup(join(dataDir, 'backups'));
+      if (copy) console.log(`[jarvis] memory backed up to ${copy}`);
+    } catch (error) {
+      console.error('[jarvis] memory backup failed:', error instanceof Error ? error.message : error);
+    }
+  };
+  backUp();
+  void memory.index(); // lines saved before search by meaning existed, or before a crash
+  let speaker = 'jarvis';
+  let lastSaid = '';
+  let lastTurn = 0;
+  let selftestAnswer: string | undefined;
+  let selftestAnswerTo = /^Shall I/;
+  const autonomous = process.env.JARVIS_AUTONOMOUS === '1';
+  // A one-word answer from the small fast model, for quick yes-or-no judgements.
+  const verdict = async (system: string, question: string) => {
+    let answer = '';
+    const router = SPOKEN[1]!;
+    for await (const piece of chat({ model: router.model, extraBody: router.extraBody, maxTokens: 4, timeoutMs: 2500, messages: [{ role: 'system', content: system }, { role: 'user', content: question }] })) answer += piece;
+    return answer;
+  };
+
+  // The self-test can stand in a pretend inbox, to check that urgent mail is spoken about unasked.
+  const pretendMail = process.env.JARVIS_SELFTEST_MAIL;
+  const initiative = new Initiative({
+    dbPath: memoryFile,
+    announce: (text, note) => assistant.announce(text, note),
+    initiate: (instruction) => assistant.initiate(instruction),
+    unreadMail: pretendMail ? async () => JSON.parse(pretendMail) as Mail[] : hands.unreadMail,
+    // The start of the text too: a plain subject line can hide an urgent request.
+    isUrgent: async (mail) => {
+      const body = pretendMail ? '' : await hands.mailBody(mail.id).catch(() => '');
+      return /urgent/i.test(await verdict(URGENCY, `From: ${mail.from}\nSubject: ${mail.subject}\n\n${body.slice(0, 600)}`));
+    },
+    failures: () => recentFailures(),
+    upcoming: hands.upcoming,
+    idleSeconds: async () => Number(/"HIDIdleTime" = (\d+)/.exec(await exec('ioreg', ['-c', 'IOHIDSystem', '-d', '4']))?.[1] ?? 0) / 1e9,
+    briefingAt: process.env.JARVIS_BRIEFING_TIME,
+  });
+  const tasks = new Tasks({
+    dbPath: memoryFile,
+    runJob: (task, done, onStep) =>
+      runJob(task, {
+        done,
+        onStep,
+        chat,
+        // Long jobs can wait for the deep model's thinking; the everyday model stands in if it is down.
+        model: { model: TIERS.hard.model, extraBody: TIERS.hard.extraBody, fallbacks: [TIERS.medium], timeoutMs: 60_000 },
+        // A job does not start or schedule further jobs.
+        // Jobs browse in a window of their own, so they do not steer the page he is using with Jarvis.
+        tools: () => tools.filter((tool) => !['background_task', 'schedule_task', 'cancel_scheduled_task'].includes(tool.name)).map((tool) => hands.jobWebTools.find((own) => own.name === tool.name) ?? tool),
+        autonomous,
+        summarize: async (answer) => {
+          let spoken = '';
+          const model = SPOKEN[0]!;
+          for await (const piece of chat({ model: model.model, extraBody: model.extraBody, maxTokens: 200, timeoutMs: 8000, messages: [{ role: 'system', content: SUMMARY }, { role: 'user', content: answer }] })) spoken += piece;
+          return spoken.trim() || answer;
+        },
+      }),
+    report: (text, note) => initiative.say({ key: `job ${note}`, kind: 'report', text, note }),
+  });
+  const handTool: Tool = {
+    name: 'hand_control',
+    description:
+      'Switch hand control on or off. When on, the webcam watches his hand: pinch thumb and finger to grab the hologram and move the hand to move it, open the hand to let go, and sweep an open hand left to open the panels or right to close them.',
+    parameters: { type: 'object', properties: { on: { type: 'boolean' } }, required: ['on'] },
+    run: async (args) => {
+      send({ type: 'hand-control', on: args.on === true });
+      return args.on === true ? 'Hand control is on; the camera is watching for his hand.' : 'Hand control is off; the camera is off.';
+    },
+  };
+  const tools = [handTool, ...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() }), ...initiative.tools(), ...tasks.tools()];
+
   const assistant = new Assistant({
-    transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)])),
+    // What Jarvis said last helps whisper hear the answer to it ("yes, the second one", names it mentioned).
+    transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)]), lastSaid.slice(-200)),
     chat,
-    tools: hands.tools,
+    tools,
+    context: () => factsPrompt(memory),
     // The small fast model gives a one-word second opinion on whether a request needs a tool. Tested
     // 12 Nov 2026: 17 of 18 sample requests right in about 0.4 s; the larger models were worse at it.
-    needsTool: async (request, previous) => {
-      let verdict = '';
-      const router = SPOKEN[1]!;
-      for await (const piece of chat({ model: router.model, extraBody: router.extraBody, maxTokens: 4, timeoutMs: 2500, messages: [{ role: 'system', content: ROUTER }, { role: 'user', content: `${previous ? `The assistant just said: "${previous.slice(-300)}"\n` : ''}Request: "${request}"` }] })) verdict += piece;
-      return /tool/i.test(verdict);
-    },
+    needsTool: async (request, previous) => /tool/i.test(await verdict(ROUTER, `${previous ? `The assistant just said: "${previous.slice(-300)}"\n` : ''}Request: "${request}"`)),
     speak,
-    emit: send,
-    // A model that has not started answering within 4 s is given up on, and the next one is asked.
-    model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: SPOKEN.slice(1), timeoutMs: 4000 },
+    emit: (event) => {
+      if (event.type === 'awake') speaker = event.persona;
+      if (event.type === 'heard') {
+        memory.log('you', event.text, event.turn);
+        initiative.heard();
+      }
+      if (event.type === 'speech') {
+        memory.log(speaker, event.text, event.turn);
+        lastSaid = event.turn === lastTurn ? `${lastSaid} ${event.text}` : event.text;
+        lastTurn = event.turn;
+      }
+      if (event.type === 'speech' && selftestAnswer && selftestAnswerTo.test(event.text)) {
+        const answer = selftestAnswer;
+        selftestAnswer = undefined; // answered once
+        setTimeout(async () => {
+          const reply = await speak(answer);
+          void assistant.hear(resample(reply.samples, reply.sampleRate, MIC_RATE));
+        }, 500);
+      }
+      send(event);
+    },
+    // A model that has not started answering within 2.5 s is joined by the next one (it normally starts in
+    // 1 to 1.7 s, measured 12 Nov 2026); after 4 s it is given up on. Lightning backs it up first: unlike
+    // Bolt it calls tools reliably when given the whole tool list (Bolt answered in words 8 times of 8).
+    model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: [SPOKEN[2]!, SPOKEN[1]!], timeoutMs: 4000, hedgeMs: 2500 },
     personas: PERSONAS,
     voiceLock,
+    autonomous,
   });
 
   process.parentPort.on('message', async ({ data }: { data: ToEngine }) => {
@@ -116,7 +241,11 @@ try {
     else if (data.type === 'interrupt') assistant.interrupt(data.byVoice);
     else if (data.type === 'user-speech') assistant.userSpeaking(data.active);
     else if (data.type === 'forget-voice') voiceLock.forget();
+    else if (data.type === 'resume') tick(); // back from sleep: catch up on anything that fell due
     else if (data.type === 'selftest') {
+      selftestAnswer = data.answer;
+      selftestAnswerTo = new RegExp(data.answerTo ?? '^Shall I');
+      if (data.question === 'none') return; // only Jarvis's own initiative is being tested
       const question = await speak(data.question || 'Jarvis, are you there?');
       void assistant.hear(resample(question.samples, question.sampleRate, MIC_RATE));
     } else if (data.type === 'shutdown') {
@@ -133,6 +262,16 @@ try {
   const readAhead = () => void hands.refresh().catch((error: unknown) => console.error('[jarvis] calendar read-ahead failed:', error instanceof Error ? error.message : error));
   readAhead();
   setInterval(readAhead, 10 * 60_000).unref();
+  tasks.resume(); // jobs a restart cut short
+  const wake = createWaker();
+  const tick = () =>
+    void Promise.resolve(backUp())
+      .then(() => tasks.tick())
+      .then(() => initiative.tick())
+      .then(() => wake([...initiative.nextTimes(), ...tasks.nextRuns()]))
+      .catch((error: unknown) => console.error('[jarvis] initiative failed:', error instanceof Error ? error.message : error));
+  tick();
+  setInterval(tick, 30_000);
 } catch (error) {
   send({ type: 'fatal', message: error instanceof Error ? error.message : String(error) });
 }

@@ -2,11 +2,13 @@ import { appTools } from './apps.ts';
 import { createCalendar } from './calendar.ts';
 import { exec } from './exec.ts';
 import { fileTools } from './files.ts';
+import { installTools } from './install.ts';
 import { macTools } from './mac.ts';
-import { mailTools } from './mail.ts';
+import { mailBody, mailTools, unreadMail } from './mail.ts';
 import { type ScreenOptions, screenTools } from './screen.ts';
 import { terminalTools } from './terminal.ts';
 import type { Tool } from './types.ts';
+import { weatherTool } from './weather.ts';
 import { webTools } from './web.ts';
 
 /** Everything Jarvis can do on this Mac, and a `refresh` that keeps slow sources (the calendar) read ahead. */
@@ -18,7 +20,12 @@ export function createTools(options: {
   accessibilityHelper: string;
 }): {
   tools: Tool[];
+  /** The browser tools as background jobs use them: the same, in a window of their own. */
+  jobWebTools: Tool[];
   refresh(): Promise<unknown>;
+  upcoming: ReturnType<typeof createCalendar>['upcoming'];
+  unreadMail: typeof unreadMail;
+  mailBody: typeof mailBody;
   /** Closes what the tools opened (the browser window). */
   close(): Promise<void>;
 } {
@@ -26,8 +33,12 @@ export function createTools(options: {
   const web = webTools({ profileDir: options.browserProfileDir });
   const helper = (args: string[]) => exec(options.accessibilityHelper, args, { timeoutMs: 20_000 });
   return {
-    tools: [...macTools, ...fileTools(), ...terminalTools, ...screenTools({ describe: options.describeImage, locate: options.locateOnScreen, helper }), calendar.tool, ...mailTools, ...web.tools, ...appTools(helper)],
+    tools: [...macTools, ...installTools(), ...fileTools(undefined, (path) => exec(options.accessibilityHelper, ['pdftext', path], { timeoutMs: 60_000 })), ...terminalTools, ...screenTools({ describe: options.describeImage, locate: options.locateOnScreen, helper }), calendar.tool, ...mailTools, weatherTool, ...web.tools, ...appTools(helper)],
+    jobWebTools: web.jobTools,
     refresh: calendar.refresh,
+    upcoming: calendar.upcoming,
+    unreadMail,
+    mailBody,
     close: web.close,
   };
 }

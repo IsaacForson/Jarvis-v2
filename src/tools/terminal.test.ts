@@ -22,4 +22,5 @@ test('sudo is refused outright, and a failing command reports why', async () => 
   await assert.rejects(run.run({ command: 'sudo rm -rf /' }), /sudo/);
   await assert.rejects(run.run({ command: 'echo hi && sudo ls' }), /sudo/);
   await assert.rejects(run.run({ command: 'ls /definitely/not/here' }), /No such file/);
+  for (const command of ['cat ~/project/.env', 'cat ~/.ssh/id_ed25519', 'security find-generic-password -a me', 'cp server.pem /tmp']) await assert.rejects(run.run({ command }), /keys or passwords/, command);
 });
