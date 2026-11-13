@@ -9,6 +9,12 @@ Personal Mac assistant. The full plan is in `Jarvis Features and Build Spec.pdf`
 Saying the other name hands the conversation over. "Go to sleep, Jarvis" or "Stop listening" sends it back to sleep, and so do two minutes of silence.
 Needs the keys in `.env`, `brew install whisper-cpp` and the speech model in `models/` (steps below).
 
+`npm run app` builds `~/Applications/Jarvis.app`, which runs this same folder under its own name: open it from
+Spotlight or Launchpad, and macOS lists "Jarvis" (not Cursor or Terminal) under Microphone, Accessibility, Screen
+Recording and Camera, to be allowed once. After code changes run `npm run build` and reopen it; rebuild the app itself
+only after upgrading Electron or moving this folder, since macOS then asks for the permissions again.
+`npm run keys-to-keychain` moves the NVIDIA keys out of `.env` into the macOS Keychain; Jarvis reads them from either.
+
 - Ctrl+Option+J turns the microphone off and on.
 - Ctrl+Option+S stops Jarvis talking.
 - Ctrl+Option+P, or the Panels button under the orb, shows and hides the transcript and the activity log.
@@ -41,7 +47,8 @@ Memory (phase 4): tell Jarvis a preference or a fact about yourself, the people 
 saves it for future sessions. Every conversation is kept too: "what did we say about the dentist?" or "what did we talk
 about yesterday?" searches it by meaning ("my teeth" finds a talk about the dentist). "What do you remember about me?" lists the facts, and "forget everything about Dana" deletes
 the matching facts and conversation lines, after asking, along with the request to forget and its reply. It all lives in `memory.db` in the app's data folder
-(`~/Library/Application Support/Jarvis`), readable only by you.
+(`~/Library/Application Support/Jarvis`), readable only by you. A copy is made each day into `backups/` there and the
+last seven are kept; to go back, quit Jarvis and put a copy in place of `memory.db`.
 
 Initiative (phase 5): Jarvis lives in the menu bar (the ◉ icon) with no Dock icon. From there you can hide the orb while
 it keeps listening, switch the microphone, and tick "Start at login". It speaks up on its own:
@@ -53,8 +60,10 @@ it keeps listening, switch the microphone, and tick "Start at login". It speaks 
 - Background tasks ("in the background, compare ..."): the deep model works on it and reports when done.
 - Repeating tasks ("every weekday at 8, go to my LinkedIn and apply to jobs that fit me"): run in the background at
   that time and reported. For LinkedIn, sign in once in Jarvis's own Chrome window. "What did the job do?" reads the
-  results. Every job is kept on disk: one cut short by a restart starts again, and a run missed while the Mac slept is
-  done when it wakes (up to 12 hours late).
+  results. Every job is kept on disk with the actions it has carried out: one cut short by a restart carries on
+  from there instead of starting over (and is dropped if that happens three times), and a run missed while the Mac
+  slept is done when it wakes (up to 12 hours late). Jobs browse in a Chrome window of their own, so you can use
+  Jarvis's browser meanwhile.
 - Failed GitHub Actions runs and deployments in repositories you pushed to this week (needs `gh` signed in).
 - Urgent emails (judged from sender, subject and the start of the text) are followed up two hours later, and again,
   firmer each time, until you read them.

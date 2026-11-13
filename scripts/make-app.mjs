@@ -5,7 +5,7 @@
 // shortcut: it works on this Mac only (it points at this folder) and is signed ad hoc, so every
 // rebuild makes macOS ask for the permissions again; use a Developer ID and a real bundle to share it.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -32,6 +32,9 @@ set('CFBundleIdentifier', 'string', 'com.jarvis.assistant');
 set('LSUIElement', 'bool', 'true'); // a menu-bar app: no Dock icon
 set('NSMicrophoneUsageDescription', 'string', 'Jarvis listens for your voice.');
 set('NSCameraUsageDescription', 'string', 'Jarvis watches your hand while hand control is on.');
+
+// The orb icon (drawn by scripts/make-icon.sh), in place of Electron's.
+copyFileSync(join(project, 'assets/Jarvis.icns'), join(target, 'Contents/Resources/electron.icns'));
 
 // What the shell runs: this project, as `npm start` would. The name keeps the same data folder.
 const app = join(target, 'Contents/Resources/app');
