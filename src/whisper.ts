@@ -28,11 +28,14 @@ const freePort = () =>
  * `convert` makes it accept audio that is not 16 kHz WAV, at the cost of an ffmpeg run per clip.
  * `vocabulary` lists names it should spell correctly, such as "Jarvis".
  */
-export async function startWhisper(options: { model: string; convert?: boolean; vocabulary?: string }): Promise<Whisper> {
+export async function startWhisper(options: { model: string; convert?: boolean; vocabulary?: string; /** A Silero voice-detection model: clips with no speech come back empty at once. */ vad?: string }): Promise<Whisper> {
   if (!existsSync(options.model)) throw new Error(`Missing speech model ${options.model}; see the README for the download command`);
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
-  const args = ['-m', options.model, '--port', String(port), ...(options.convert ? ['--convert'] : [])];
+  // Without voice detection, room noise came back as invented sentences ("Sous-titrage Société Radio-Canada",
+  // "Thank you.") after up to 5 s of retries, holding up what was said next. With it, noise returns nothing in
+  // about 30 ms. No temperature fallback: retrying a hard clip costs seconds and rarely helps a short command.
+  const args = ['-m', options.model, '--port', String(port), '-nf', ...(options.vad && existsSync(options.vad) ? ['--vad', '-vm', options.vad] : []), ...(options.convert ? ['--convert'] : [])];
   const server = spawn('whisper-server', args, { stdio: 'ignore' });
 
   // Rejects if the server dies, so no caller waits forever on a dead process.
@@ -64,7 +67,8 @@ export async function startWhisper(options: { model: string; convert?: boolean; 
     const form = new FormData();
     form.set('file', wav, 'clip.wav');
     form.set('response_format', 'json');
-    if (language) form.set('language', language);
+    // Always sent, so a clip is never guessed to be another language.
+    form.set('language', language ?? 'en');
     const prompt = [options.vocabulary, context].filter(Boolean).join(' ');
     if (prompt) form.set('prompt', prompt);
     // A stuck server must not leave Jarvis deaf without a word: give up and say so.

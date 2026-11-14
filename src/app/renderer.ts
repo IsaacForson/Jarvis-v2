@@ -45,12 +45,6 @@ const stopPlayback = () => {
   nextStart = 0;
 };
 
-const interrupt = () => {
-  if (playing.size === 0 && !pendingTurn) return;
-  stopPlayback();
-  jarvis.send({ type: 'interrupt', byVoice: true });
-};
-
 const voiceLevel = () => {
   const wave = new Float32Array(analyser.fftSize);
   analyser.getFloatTimeDomainData(wave);
@@ -105,6 +99,9 @@ jarvis.onMessage((message: ToRenderer) => {
       pendingTurn = true;
       break;
     case 'heard':
+      // The engine decided this was meant for Jarvis: whatever it was still saying from before stops.
+      droppedThrough = Math.max(droppedThrough, message.turn - 1);
+      stopPlayback();
       say(`“${message.text}”`);
       break;
     case 'speech':
@@ -204,10 +201,8 @@ const startMicrophone = async () => {
       userSpeaking = true;
       jarvis.send({ type: 'user-speech', active: true });
     },
-    // Confirmed speech, not a cough or a click: this is what cuts Jarvis off mid-sentence.
-    onSpeechRealStart: () => {
-      if (!muted) interrupt();
-    },
+    // Speech no longer cuts Jarvis off the moment it starts: the engine listens first and stops the
+    // reply only for words meant for it, so a television or other voices cannot silence it.
     onVADMisfire: () => {
       userSpeaking = false;
       jarvis.send({ type: 'user-speech', active: false });

@@ -41,6 +41,7 @@ const setup = (
   const voices: string[] = [];
   const lockCalls: string[] = [];
   const checks = [...(overrides.voice ?? [])];
+  let enrolling = false;
   const assistant = new Assistant({
     transcribe: async () => heard.shift() ?? 'What time is it?',
     chat: (request) => {
@@ -79,9 +80,16 @@ const setup = (
     },
     personas: { jarvis: { voice: 'george', prompt: 'Be Jarvis.', brief: 'Be Jarvis, briefly.' }, friday: { voice: 'emma', prompt: 'Be Friday.' } },
     voiceLock: overrides.voice && {
-      check: async () => checks.shift() ?? { result: 'open' },
-      beginEnrolment: () => void lockCalls.push('enrol'),
+      check: async () => {
+        const result = checks.shift() ?? { result: 'open' };
+        if (result.result === 'enrolled') enrolling = false;
+        return result;
+      },
+      beginEnrolment: () => void (lockCalls.push('enrol'), (enrolling = true)),
       forget: () => void lockCalls.push('forget'),
+      get enrolling() {
+        return enrolling;
+      },
     },
     startAwake: !overrides.asleep,
     holdMs: 20,
@@ -126,7 +134,7 @@ test('the next turn carries the conversation so far', async () => {
 test('silence or noise is ignored without calling the model', async () => {
   const { assistant, summary, requests } = setup([['unused']], { heard: [' [BLANK_AUDIO] '] });
   await assistant.hear(audio);
-  assert.deepEqual(summary(), ['done']);
+  assert.deepEqual(summary(), [], 'no turn at all');
   assert.equal(requests.length, 0);
 });
 
@@ -170,9 +178,9 @@ test('a model failure is reported and the unanswered question is forgotten', asy
 test('asleep, Jarvis ignores speech until addressed by name, then answers what followed', async () => {
   const { assistant, summary, requests } = setup([['Nine.']], { asleep: true, heard: ['What time is it?', 'Hey Jarvis, what time is it?'] });
   await assistant.hear(audio);
-  assert.deepEqual(summary(), ['done']);
+  assert.deepEqual(summary(), []);
   await assistant.hear(audio);
-  assert.deepEqual(summary().slice(1), ['heard:Hey Jarvis, what time is it?', 'awake:true', 'thinking', 'speech:Nine.', 'done']);
+  assert.deepEqual(summary(), ['heard:Hey Jarvis, what time is it?', 'awake:true', 'thinking', 'speech:Nine.', 'done']);
   assert.deepEqual(requests[0]?.messages[1], { role: 'user', content: 'what time is it?' });
 });
 
@@ -279,17 +287,17 @@ test('saying Friday wakes the female voice with her own character, and Jarvis ta
 test('a stranger is ignored once a voice is enrolled', async () => {
   const { assistant, summary, requests } = setup([['Nine.']], { voice: [{ result: 'stranger', score: 0.4 }, { result: 'owner', score: 0.9 }] });
   await assistant.hear(audio);
-  assert.deepEqual(summary(), ['voice:stranger', 'done']);
+  assert.deepEqual(summary(), ['voice:stranger']);
   await assistant.hear(audio);
   assert.equal(requests.length, 1);
 });
 
 test('"learn my voice" starts enrolment and the samples are not treated as questions', async () => {
   const { assistant, summary, requests, lockCalls } = setup([['unused']], {
-    heard: ['Learn my voice.', 'The weather is lovely today.', 'I like long walks.', 'Short.', 'And a third sentence here.'],
+    heard: ['Learn my voice.', 'Jarvis, the weather is lovely today.', 'See you next week, on the television.', 'Jarvis, I like long walks.', 'Jarvis, short.', 'Jarvis, and a third sentence here.'],
     voice: [{ result: 'open' }, { result: 'sample' }, { result: 'sample' }, { result: 'too-short' }, { result: 'enrolled', threshold: 0.8 }],
   });
-  for (let i = 0; i < 5; i++) await assistant.hear(audio);
+  for (let i = 0; i < 6; i++) await assistant.hear(audio);
   assert.deepEqual(lockCalls, ['enrol']);
   assert.equal(requests.length, 0);
   assert.equal(summary().at(-2), 'speech:Thank you, sir. From now on we answer only to your voice.');
@@ -675,4 +683,57 @@ test('sending a message is asked about even when Jarvis works on its own', async
   await assistant.hear(audio);
   assert.deepEqual(ran, []);
   assert.deepEqual(summary().slice(2, 5), ['tool:asking', 'speech:Shall I send a message to Dana, saying: Running late, sir?', 'tool:declined']);
+});
+
+test('room noise, other people talking and Jarvis\'s own echo do not cut off its reply', async () => {
+  let assistantRef: Assistant | undefined;
+  const background = ['What time is it?', 'and then the striker scores again', 'One. Two. Three.'];
+  const { assistant, summary } = setup([['One. Two. Three. ']], {
+    heard: background,
+    onSpeak: async (text) => {
+      // While Jarvis talks, the television talks too, and the microphone hears Jarvis itself.
+      if (text === 'Two.') {
+        await assistantRef!.hear(audio);
+        await assistantRef!.hear(audio);
+      }
+    },
+  });
+  assistantRef = assistant;
+  // Awake, so the television is heard; it must still not interrupt.
+  await assistant.hear(audio);
+  assert.ok(summary().includes('speech:Three.'), 'the reply was finished');
+});
+
+test('a call by name in the middle of other talk is still heard', async () => {
+  const { assistant, summary } = setup([['Nine.']], { asleep: true, heard: ['I really love his music, his melodies are phenomenal. Um, okay. Jarvis, what time is it?'] });
+  await assistant.hear(audio);
+  assert.deepEqual(summary().slice(1, 3), ['awake:true', 'thinking']);
+});
+
+test('a clear barge-in still stops the reply', async () => {
+  let assistantRef: Assistant | undefined;
+  const { assistant, summary } = setup([['One. Two. Three. '], ['Stopped.']], {
+    heard: ['What time is it?', 'Stop, that is enough.'],
+    onSpeak: async (text) => {
+      if (text === 'Two.') await assistantRef!.hear(audio);
+    },
+  });
+  assistantRef = assistant;
+  await assistant.hear(audio);
+  assert.ok(!summary().includes('speech:Three.'), 'cut off');
+  assert.ok(summary().includes('heard:Stop, that is enough.'));
+});
+
+test('talk in the room that the model judges not meant for Jarvis gets no reply at all', async () => {
+  const { assistant, summary } = setup([['IGNORE']], { heard: ['and the striker scores again'] });
+  await assistant.hear(audio);
+  assert.ok(!summary().some((line) => line.startsWith('speech:')), 'silent');
+});
+
+test('Jarvis\'s own words coming back through the microphone are recognised as an echo', async () => {
+  const { isEcho } = await import('./assistant.ts');
+  assert.equal(isEcho('Yes, sir?', 'Yes, sir?'), true);
+  assert.equal(isEcho('It is nine o\'clock now', 'It is nine o\'clock now, sir.'), true);
+  assert.equal(isEcho('Yes.', 'Yes, sir?'), false, 'a one-word answer is his');
+  assert.equal(isEcho('What is the weather?', 'Yes, sir?'), false);
 });

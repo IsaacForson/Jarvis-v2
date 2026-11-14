@@ -8,6 +8,18 @@ test('a name at the start says who is addressed, with or without a greeting', ()
   assert.deepEqual(parseWake(' okay, Javis! Are you there?'), { name: 'jarvis', rest: 'Are you there?' });
   assert.deepEqual(parseWake('Friday, are you there?'), { name: 'friday', rest: 'are you there?' });
   assert.deepEqual(parseWake('Hey Friday'), { name: 'friday', rest: '' });
+  assert.deepEqual(parseWake('Um, okay, Jarvis, open Safari.'), { name: 'jarvis', rest: 'open Safari.' });
+});
+
+test('a name starting a sentence after other talk counts, a name mentioned in passing does not', () => {
+  assert.deepEqual(parseWake('I love his music, his melodies are phenomenal. Um, okay. Jarvis, what time is it?'), { name: 'jarvis', rest: 'what time is it?' });
+  assert.deepEqual(parseWake('That was a great game. Friday, turn it off.'), { name: 'friday', rest: 'turn it off.' });
+  assert.deepEqual(parseWake('We met last week. Friday is the deadline.'), { rest: 'We met last week. Friday is the deadline.' });
+});
+
+test('a name at the end, after a comma, counts too', () => {
+  assert.deepEqual(parseWake('What time is it, Jarvis?'), { name: 'jarvis', rest: 'What time is it?' });
+  assert.deepEqual(parseWake('Open Safari, Friday.'), { name: 'friday', rest: 'Open Safari.' });
 });
 
 test('speech that is not addressed to either is left as it is', () => {

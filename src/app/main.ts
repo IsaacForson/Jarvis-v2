@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { appendFile, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { format } from 'node:util';
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, screen, systemPreferences, Tray, utilityProcess } from 'electron';
 import { keychainKeys } from '../key-pool.ts';
 import { LOGIN_AGENT, setStartAtLogin } from './login.ts';
@@ -12,6 +14,22 @@ import type { ToEngine, ToMain, ToRenderer } from './messages.ts';
 const root = process.env.JARVIS_PROJECT ?? app.getAppPath();
 const dist = join(root, 'dist');
 const selftest = process.env.JARVIS_SELFTEST === '1';
+
+// Everything Jarvis and its engine print also goes to ~/Library/Logs/Jarvis/jarvis.log, so a problem
+// can be traced afterwards even when Jarvis was started from the Dock or at login, with no terminal.
+const logDir = join(homedir(), 'Library/Logs/Jarvis');
+mkdirSync(logDir, { recursive: true });
+const logFile = join(logDir, 'jarvis.log');
+if (existsSync(logFile) && statSync(logFile).size > 5_000_000) renameSync(logFile, `${logFile}.old`);
+const logStream = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
+const toLog = (text: string) => logStream.write(text.replace(/^(?=.)/gm, `${new Date().toISOString()} `));
+for (const level of ['log', 'error', 'warn'] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...parts: unknown[]) => {
+    original(...parts);
+    toLog(`${format(...parts)}\n`);
+  };
+}
 try {
   process.loadEnvFile(join(root, '.env'));
 } catch {
@@ -123,7 +141,13 @@ app.whenReady().then(async () => {
     ]).popup(),
   );
 
-  const engine = utilityProcess.fork(join(dist, 'engine.js'), [], { env: { ...process.env, JARVIS_ROOT: root, JARVIS_DATA: app.getPath('userData') }, stdio: 'inherit' });
+  const engine = utilityProcess.fork(join(dist, 'engine.js'), [], { env: { ...process.env, JARVIS_ROOT: root, JARVIS_DATA: app.getPath('userData') }, stdio: 'pipe' });
+  for (const [stream, out] of [[engine.stdout, process.stdout], [engine.stderr, process.stderr]] as const) {
+    stream?.on('data', (chunk: Buffer) => {
+      out.write(chunk);
+      toLog(chunk.toString());
+    });
+  }
   let quitting = false;
   let status: ToRenderer | undefined; // ready or fatal, replayed if the window loads after the engine
   const toRenderer = (message: ToRenderer) => {

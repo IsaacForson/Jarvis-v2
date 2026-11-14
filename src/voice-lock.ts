@@ -66,6 +66,11 @@ export class VoiceLock {
   }
 
   /** The next few clips become the owner's voiceprint. */
+  /** Learning a voice: the next clips handed to `check` become the voiceprint. */
+  get enrolling(): boolean {
+    return this.#samples !== undefined;
+  }
+
   beginEnrolment(): void {
     this.#samples = [];
   }

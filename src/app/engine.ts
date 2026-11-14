@@ -65,7 +65,7 @@ try {
   const [tts, whisper, speakerProcessor, speakerModel, embedder] = await Promise.all([
     // fp32 measured 2.5x faster than the smaller q8 build on this Mac (M2 Pro).
     KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'fp32', device: 'cpu' }),
-    startWhisper({ model: speechModel(root), vocabulary: 'Jarvis, Friday, Forson.' }),
+    startWhisper({ model: speechModel(root), vocabulary: 'Jarvis, Friday, Forson.', vad: join(root, 'models/ggml-silero-v5.1.2.bin') }),
     AutoProcessor.from_pretrained(SPEAKER_MODEL),
     // The 8-bit build told voices apart as well as the full one in testing, at a quarter of the size.
     AutoModelForXVector.from_pretrained(SPEAKER_MODEL, { dtype: 'q8', device: 'cpu' }),
@@ -282,7 +282,13 @@ try {
 
   const assistant = new Assistant({
     // What Jarvis said last helps whisper hear the answer to it ("yes, the second one", names it mentioned).
-    transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)]), lastSaid.slice(-200), language?.code),
+    transcribe: async (audio) => {
+      const started = Date.now();
+      const text = await whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)]), lastSaid.slice(-200), language?.code);
+      // JARVIS_DEBUG=1 logs everything whisper hears, addressed or not, to see why a call was missed.
+      if (process.env.JARVIS_DEBUG === '1') console.log(`[debug] ${(audio.length / MIC_RATE).toFixed(1)} s of sound, ${Date.now() - started} ms: ${JSON.stringify(text)}`);
+      return text;
+    },
     chat,
     tools,
     context: () => [factsPrompt(memory), routines.prompt(), language ? `He is speaking ${language.name} now: reply in ${language.name}, in the same character. He goes back to English by asking; then call set_language with English.` : ''].filter(Boolean).join('\n'),

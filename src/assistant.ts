@@ -42,7 +42,7 @@ export type AssistantDeps = {
   quick?: { chat: AssistantDeps['chat']; model: Model; tools: Tool[] };
   personas: Record<PersonaName, Persona>;
   /** When given and enrolled, only the owner's voice is answered. */
-  voiceLock?: Pick<VoiceLock, 'check' | 'beginEnrolment' | 'forget'>;
+  voiceLock?: Pick<VoiceLock, 'check' | 'beginEnrolment' | 'forget' | 'enrolling'>;
   /** Skip the wake word at the start; Jarvis normally starts asleep. */
   startAwake?: boolean;
   /** How long to wait for the rest of a sentence that trailed off. */
@@ -99,6 +99,18 @@ const MAX_EXCHANGES = 10;
 const MAX_ROUNDS = 40;
 const APOLOGY = 'Sorry, sir, I could not reach my brain just now. Please try again.';
 // Whisper ends a finished sentence with a full stop, question mark or exclamation mark, and a trailing-off one with "...".
+/** Most of the words heard were just said by Jarvis itself: its own voice, back through the microphone. */
+export function isEcho(heard: string, spoken: string): boolean {
+  const words = (value: string) => value.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
+  const said = new Set(words(spoken));
+  const heardWords = words(heard);
+  const share = heardWords.filter((word) => said.has(word)).length / Math.max(1, heardWords.length);
+  // Two words are enough when all of them were just said ("Yes, sir?"); a single "yes" is his to say.
+  return (heardWords.length >= 2 && share === 1) || (heardWords.length >= 3 && share >= 0.8);
+}
+/** The model's way of saying that what was heard was not meant for Jarvis at all. */
+const IGNORE = /^\W*ignore\W*$/i;
+const BARGE_IN = /^\W*(?:stop|wait|hold on|hang on|no\b|nope|actually|sorry|cancel|never ?mind|enough|quiet|shut up|pause|excuse me)/i;
 const FINISHED = /[.!?]["')]*$/;
 const TRAILING_OFF = /(\.\.\.|…)["')]*$/;
 
@@ -120,6 +132,8 @@ export class Assistant {
   /** Something was forgotten during the turn under way, so it must not be kept either. */
   #forgetting = false;
   #userSpeaking = false;
+  /** What Jarvis said most recently, to recognise its own voice picked up by the microphone. */
+  #lastSpoken = '';
   /** While set, what is heard is typed (dictation) or written down (meeting) instead of answered. */
   #mode: 'dictation' | 'meeting' | undefined;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -199,15 +213,37 @@ export class Assistant {
   async hear(audio: Float32Array): Promise<void> {
     this.#userSpeaking = false;
     if (this.#approval) return this.#hearAnswer(this.#approval, audio);
-    clearTimeout(this.#holdTimer);
-    this.#cancel();
-    const turn = this.#begin();
     const { transcribe, emit, voiceLock } = this.#deps;
+    const startedAt = performance.now();
+    // Listened to before anything is cut off: in a room with a television, music or other people
+    // talking, cutting Jarvis off at every sound left it unable to finish a sentence or hear its name.
+    let heard: [string, VoiceCheck | undefined];
+    try {
+      if (voiceLock?.enrolling) {
+        // While learning his voice, only sentences that start with the name are taken: a television or
+        // someone else in the room once became the voiceprint, after which he was ignored as a stranger.
+        const raw = await transcribe(audio);
+        heard = [raw, parseWake(cleanTranscript(raw)).name ? await voiceLock.check(audio) : undefined];
+      } else {
+        heard = await Promise.all([transcribe(audio), voiceLock?.check(audio)]);
+      }
+    } catch (error) {
+      const turn = this.#begin(startedAt);
+      return this.#run(turn, () => Promise.reject(error));
+    }
+    const [raw, voice] = heard;
+    let text = cleanTranscript(raw);
+    if (!this.#meantForJarvis(text, voice)) {
+      if (voice && voice.result !== 'open') emit({ type: 'voice', ...voice });
+      return this.#armHold(); // noise, another voice, an echo of Jarvis, or talk not addressed to it
+    }
+    clearTimeout(this.#holdTimer);
+    // He spoke over a question that had not been answered aloud yet: probably still finishing it.
+    if (this.#answering && !this.#answering.spoken) this.#carry = this.#answering.question;
+    this.#cancel();
+    const turn = this.#begin(startedAt);
+    turn.transcriptMs = performance.now() - startedAt;
     await this.#run(turn, async () => {
-      const [raw, voice] = await Promise.all([transcribe(audio), voiceLock?.check(audio)]);
-      let text = cleanTranscript(raw);
-      turn.transcriptMs = performance.now() - turn.startedAt;
-      if (turn.abort.signal.aborted) return;
       if (voice && voice.result !== 'open') emit({ type: 'voice', ...voice });
       if (this.#mode === 'meeting' && text) {
         // Everyone in the room is written down; only the owner, by name, can end it.
@@ -221,8 +257,8 @@ export class Assistant {
       if (!text || voice?.result === 'stranger') return this.#armHold(); // noise, or not the owner's voice
 
       // Enrolment clips are voice samples, not questions.
-      if (voice?.result === 'too-short') return void (await this.#say(turn, 'A little longer, please, sir. A full sentence.'));
-      if (voice?.result === 'sample') return void (await this.#say(turn, 'Good. Another sentence, please.'));
+      if (voice?.result === 'too-short') return void (await this.#say(turn, 'A little longer, please, sir. A full sentence, starting with my name.'));
+      if (voice?.result === 'sample') return void (await this.#say(turn, 'Good. Another sentence, starting with my name, please.'));
       if (voice?.result === 'enrolled') return void (await this.#say(turn, 'Thank you, sir. From now on we answer only to your voice.'));
 
       const wake = parseWake(text);
@@ -277,7 +313,7 @@ export class Assistant {
       }
       if (voiceLock && isLearnVoiceCommand(text)) {
         voiceLock.beginEnrolment();
-        return void (await this.#say(turn, 'Of course, sir. Say three full sentences, one at a time, and I will learn your voice.'));
+        return void (await this.#say(turn, 'Of course, sir. Say three full sentences, one at a time, each starting with my name, such as: Jarvis, this is my voice. And turn off any music or television first.'));
       }
 
       const full = [this.#carry, text].filter(Boolean).join(' ');
@@ -291,9 +327,28 @@ export class Assistant {
     });
   }
 
-  #begin(): Turn {
+  #begin(startedAt = performance.now()): Turn {
     this.#abort = new AbortController();
-    return { id: ++this.#turns, abort: this.#abort, startedAt: performance.now(), transcriptMs: 0 };
+    return { id: ++this.#turns, abort: this.#abort, startedAt, transcriptMs: 0 };
+  }
+
+  /**
+   * Whether what was heard is for Jarvis: something was said, by the owner if a voice is enrolled,
+   * it is not Jarvis's own voice coming back through the microphone, and Jarvis is awake, busy with
+   * dictation or a meeting, or was called by name.
+   */
+  #meantForJarvis(text: string, voice: VoiceCheck | undefined): boolean {
+    if (!text) return false;
+    if (this.#mode === 'meeting') return true; // everyone in the room is written down
+    if (this.#deps.voiceLock?.enrolling && !voice) return false; // not a sample of his voice
+    if (voice && voice.result !== 'open' && voice.result !== 'owner') return voice.result !== 'stranger'; // enrolment samples count
+    if (this.#mode) return true;
+    if (isEcho(text, this.#lastSpoken)) return false;
+    if (parseWake(text).name) return true;
+    // While Jarvis is replying, only a clear barge-in stops it ("stop", "wait", "no, I meant..."):
+    // a television or other people talking must not cut it off.
+    if (this.#answering?.spoken) return BARGE_IN.test(text);
+    return this.#awake;
   }
 
   #cancel(): void {
@@ -323,7 +378,10 @@ export class Assistant {
   async #say(turn: Turn, sentence: string): Promise<boolean> {
     const speech = await this.#deps.speak(sentence, this.#deps.personas[this.#persona].voice);
     const live = !turn.abort.signal.aborted;
-    if (live) this.#deps.emit({ type: 'speech', turn: turn.id, text: sentence, speech });
+    if (live) {
+      this.#deps.emit({ type: 'speech', turn: turn.id, text: sentence, speech });
+      this.#lastSpoken = `${this.#lastSpoken} ${sentence}`.slice(-400);
+    }
     return live;
   }
 
@@ -444,7 +502,9 @@ export class Assistant {
         })();
 
         let said = '';
+        let ignored = false;
         const voice = async (sentence: string): Promise<boolean> => {
+          if (IGNORE.test(sentence)) return (ignored = true); // talk in the room not meant for Jarvis: say nothing
           if (!live() || !(await this.#say(turn, sentence))) return false;
           if (!spoken) emit({ type: 'timing', turn: turn.id, transcriptMs: turn.transcriptMs, firstWordsMs, firstAudioMs: elapsed() });
           said += (said ? ' ' : '') + sentence;
@@ -473,6 +533,7 @@ export class Assistant {
           continue;
         }
         mustAct = undefined;
+        if (calls.length === 0 && held.length > 0 && held.every((sentence) => IGNORE.test(sentence))) break; // not meant for Jarvis
         if (needed && calls.length === 0) {
           force = true; // it talked instead of acting: discard the talk and ask again, tool call required
           continue;
@@ -480,6 +541,7 @@ export class Assistant {
         for (const sentence of held) if (!(await voice(sentence))) break;
         if (!live()) break;
 
+        if (calls.length === 0 && ignored && !said) break; // not meant for Jarvis: no reply, nothing recorded
         if (calls.length === 0) {
           // No more actions: this was the reply. An empty one after actions still deserves a word.
           // A model that returns nothing at all must not leave silence either.

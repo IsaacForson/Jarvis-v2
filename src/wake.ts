@@ -5,7 +5,14 @@ import type { PersonaName } from './persona.ts';
 // utterance; move to openWakeWord (see the spec) if that costs too much power or misses too often.
 
 // "Javis" and "Jervis" are how whisper sometimes spells the name.
-const WAKE = /^\s*(?:(?:hey|hi|hello|ok|okay|yo)[\s,]+)?(j[ae]r?vis|friday)\b[\s,.!?]*/i;
+// A few filler words may come first ("um, okay, Jarvis"); people rarely start dead on the name.
+const WAKE = /^\s*(?:(?:hey|hi|hello|ok|okay|yo|um+|uh+|erm|so|and|well|oh|right|please)[\s,.!]+){0,3}(j[ae]r?vis|friday)\b[\s,.!?]*/i;
+// Or the name last, set off by a comma: "What time is it, Jarvis?"
+const WAKE_LAST = /,\s*(j[ae]r?vis|friday)\W*$/i;
+// Or the name starting a sentence later on, after other talk in the room was heard with it:
+// "...his melodies are phenomenal. Um, okay. Jarvis, what time is it?" The name must begin the
+// sentence and be followed by a pause, so "I told him about Jarvis yesterday" does not count.
+const WAKE_LATER = /[.!?]\s+(?:(?:hey|hi|hello|ok|okay|yo|um+|uh+|erm|so|and|well|oh|right|please)[\s,.!]+){0,3}(j[ae]r?vis|friday)\s*[,.!?]\s*/gi;
 const SLEEP = /\b(?:go to sleep|go back to sleep|sleep mode|stop listening|go quiet|good ?night|goodbye|that(?:'s| is| will be) all)\b/i;
 // "I want to talk to Friday", "switch to Jarvis", "get Friday", "Friday, take over".
 const NAME = '(j[ae]r?vis|friday)';
@@ -19,8 +26,13 @@ const FORGET_VOICE = /\bforget\b.*\bmy voice\b/i;
 /** Was an assistant addressed by name at the start, which one, and what was said after the name? */
 export function parseWake(text: string): { name?: PersonaName; rest: string } {
   const match = WAKE.exec(text);
-  if (!match) return { rest: text };
-  return { name: /^f/i.test(match[1]!) ? 'friday' : 'jarvis', rest: text.slice(match[0].length).trim() };
+  if (match) return { name: /^f/i.test(match[1]!) ? 'friday' : 'jarvis', rest: text.slice(match[0].length).trim() };
+  const later = [...text.matchAll(WAKE_LATER)].at(-1);
+  if (later) return { name: /^f/i.test(later[1]!) ? 'friday' : 'jarvis', rest: text.slice(later.index + later[0].length).trim() };
+  const last = WAKE_LAST.exec(text);
+  // The sentence keeps its own ending ("?" for a question), so it still reads as finished.
+  if (last) return { name: /^f/i.test(last[1]!) ? 'friday' : 'jarvis', rest: `${text.slice(0, last.index).trim()}${/[?!]/.exec(text.slice(last.index))?.[0] ?? '.'}` };
+  return { rest: text };
 }
 
 const short = (text: string) => text.trim().split(/\s+/).length <= 8;
