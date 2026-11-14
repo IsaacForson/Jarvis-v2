@@ -61,6 +61,7 @@ const describe = (message: ToRenderer) =>
         ? `voice: ${message.result}${'score' in message ? ` (match ${message.score.toFixed(2)})` : 'threshold' in message ? ` (pass mark ${message.threshold})` : ''}`
         : message.type === 'tool'
           ? `tool ${message.status}: ${message.detail}`
+      : message.type === 'ignored' ? `not addressed: ${JSON.stringify(message.text)}`
       : message.type === 'heard' || message.type === 'speech' ? `${message.type}: ${message.text}` : 'message' in message ? `${message.type}: ${message.message}` : message.type;
 
 app.whenReady().then(async () => {

@@ -178,9 +178,9 @@ test('a model failure is reported and the unanswered question is forgotten', asy
 test('asleep, Jarvis ignores speech until addressed by name, then answers what followed', async () => {
   const { assistant, summary, requests } = setup([['Nine.']], { asleep: true, heard: ['What time is it?', 'Hey Jarvis, what time is it?'] });
   await assistant.hear(audio);
-  assert.deepEqual(summary(), []);
+  assert.deepEqual(summary(), ['ignored'], 'logged only');
   await assistant.hear(audio);
-  assert.deepEqual(summary(), ['heard:Hey Jarvis, what time is it?', 'awake:true', 'thinking', 'speech:Nine.', 'done']);
+  assert.deepEqual(summary().slice(1), ['heard:Hey Jarvis, what time is it?', 'awake:true', 'thinking', 'speech:Nine.', 'done']);
   assert.deepEqual(requests[0]?.messages[1], { role: 'user', content: 'what time is it?' });
 });
 
@@ -736,4 +736,13 @@ test('Jarvis\'s own words coming back through the microphone are recognised as a
   assert.equal(isEcho('It is nine o\'clock now', 'It is nine o\'clock now, sir.'), true);
   assert.equal(isEcho('Yes.', 'Yes, sir?'), false, 'a one-word answer is his');
   assert.equal(isEcho('What is the weather?', 'Yes, sir?'), false);
+});
+
+test('asleep, calling the name wakes Jarvis even when it said its own name last', async () => {
+  const { assistant, summary } = setup([['unused']], { asleep: true, heard: ['Friday, give me Jarvis.', 'Go to sleep.', 'Jarvis, Jarvis.'] });
+  await assistant.hear(audio); // Friday hands over: "Jarvis here, sir."
+  await assistant.hear(audio);
+  await assistant.hear(audio);
+  assert.equal(summary().filter((line) => line === 'awake:true').length >= 2, true);
+  assert.equal(summary().at(-2), 'speech:Yes, sir?');
 });

@@ -6,7 +6,7 @@ import type { PersonaName } from './persona.ts';
 
 // "Javis" and "Jervis" are how whisper sometimes spells the name.
 // A few filler words may come first ("um, okay, Jarvis"); people rarely start dead on the name.
-const WAKE = /^\s*(?:(?:hey|hi|hello|ok|okay|yo|um+|uh+|erm|so|and|well|oh|right|please)[\s,.!]+){0,3}(j[ae]r?vis|friday)\b[\s,.!?]*/i;
+const WAKE = /^\s*(?:(?:hey|hi|hello|ok|okay|yo|um+|uh+|erm|so|and|well|oh|right|please)[\s,.!]+){0,3}(j[ae]r?vis|friday)(?:'s)?\b[\s,.!?]*/i;
 // Or the name last, set off by a comma: "What time is it, Jarvis?"
 const WAKE_LAST = /,\s*(j[ae]r?vis|friday)\W*$/i;
 // Or the name starting a sentence later on, after other talk in the room was heard with it:
@@ -26,13 +26,48 @@ const FORGET_VOICE = /\bforget\b.*\bmy voice\b/i;
 /** Was an assistant addressed by name at the start, which one, and what was said after the name? */
 export function parseWake(text: string): { name?: PersonaName; rest: string } {
   const match = WAKE.exec(text);
-  if (match) return { name: /^f/i.test(match[1]!) ? 'friday' : 'jarvis', rest: text.slice(match[0].length).trim() };
+  // "Jarvis, Jarvis!" is a call, not a question about Jarvis.
+  if (match) return { name: /^f/i.test(match[1]!) ? 'friday' : 'jarvis', rest: text.slice(match[0].length).trim().replace(/^(?:(?:j[ae]r?vis|friday)\W*)+$/i, '') };
   const later = [...text.matchAll(WAKE_LATER)].at(-1);
   if (later) return { name: /^f/i.test(later[1]!) ? 'friday' : 'jarvis', rest: text.slice(later.index + later[0].length).trim() };
   const last = WAKE_LAST.exec(text);
   // The sentence keeps its own ending ("?" for a question), so it still reads as finished.
   if (last) return { name: /^f/i.test(last[1]!) ? 'friday' : 'jarvis', rest: `${text.slice(0, last.index).trim()}${/[?!]/.exec(text.slice(last.index))?.[0] ?? '.'}` };
-  return { rest: text };
+  return soundsLike(text) ?? { rest: text };
+}
+
+/** Letters changed, added or dropped to turn one word into the other. */
+function distance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length]!;
+}
+
+/**
+ * The name as whisper spells it for some accents: "Charvis", "Jarbis", "Jervis", "Jav is". Only the
+ * first words of an utterance are tried, so a passing mention in other talk does not wake Jarvis.
+ * (Friday is a plain English word and comes through spelled right.)
+ */
+function soundsLike(text: string): { name: PersonaName; rest: string } | undefined {
+  const words = [...text.matchAll(/[\p{L}']+/gu)];
+  const fillers = /^(hey|hi|hello|ok|okay|yo|um+|uh+|erm|so|and|well|oh|right|please)$/i;
+  let first = 0;
+  while (first < words.length && first < 3 && fillers.test(words[first]![0])) first++;
+  for (const span of [1, 2]) {
+    const pieces = words.slice(first, first + span);
+    if (pieces.length < span) continue;
+    const word = pieces.map((piece) => piece[0]).join('').toLowerCase().replace(/'s$/, '').replace(/'/g, '');
+    // Sounds that start like "j", end like "-is", with a "v" or "b" between; a word split in two must be nearer still.
+    if (word.length >= 4 && word.length <= 8 && /^[jcgdhs]/.test(word) && /[vb]/.test(word) && /[sz]$/.test(word) && distance(word, 'jarvis') <= (span === 1 ? 2 : 1)) {
+      const end = pieces.at(-1)!;
+      return { name: 'jarvis', rest: text.slice(end.index + end[0].length).replace(/^[\s,.!?]+/, '').trim() };
+    }
+  }
+  return undefined;
 }
 
 const short = (text: string) => text.trim().split(/\s+/).length <= 8;

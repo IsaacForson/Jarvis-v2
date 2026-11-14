@@ -15,6 +15,8 @@ export type AssistantEvent =
   /** A voice-lock decision, for the log and the window. */
   | ({ type: 'voice' } & Exclude<VoiceCheck, { result: 'open' }>)
   | { type: 'thinking'; turn: number }
+  /** A short phrase heard while asleep that did not wake Jarvis; for the log only. */
+  | { type: 'ignored'; text: string }
   /** Delays for one answered turn, each counted from the moment the utterance arrived. */
   | { type: 'timing'; turn: number; transcriptMs: number; firstWordsMs: number; firstAudioMs: number }
   | { type: 'heard'; turn: number; text: string }
@@ -235,6 +237,8 @@ export class Assistant {
     let text = cleanTranscript(raw);
     if (!this.#meantForJarvis(text, voice)) {
       if (voice && voice.result !== 'open') emit({ type: 'voice', ...voice });
+      // A short phrase heard while asleep is often a call whose name was misheard: logged, to find out how.
+      if (!this.#awake && text && text.split(/\s+/).length <= 5) emit({ type: 'ignored', text });
       return this.#armHold(); // noise, another voice, an echo of Jarvis, or talk not addressed to it
     }
     clearTimeout(this.#holdTimer);
@@ -343,6 +347,8 @@ export class Assistant {
     if (this.#deps.voiceLock?.enrolling && !voice) return false; // not a sample of his voice
     if (voice && voice.result !== 'open' && voice.result !== 'owner') return voice.result !== 'stranger'; // enrolment samples count
     if (this.#mode) return true;
+    // Asleep, Jarvis is silent, so a name cannot be its own echo ("Jarvis here, sir" said earlier).
+    if (!this.#awake && parseWake(text).name) return true;
     if (isEcho(text, this.#lastSpoken)) return false;
     if (parseWake(text).name) return true;
     // While Jarvis is replying, only a clear barge-in stops it ("stop", "wait", "no, I meant..."):

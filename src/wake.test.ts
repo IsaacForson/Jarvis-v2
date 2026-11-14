@@ -8,6 +8,7 @@ test('a name at the start says who is addressed, with or without a greeting', ()
   assert.deepEqual(parseWake(' okay, Javis! Are you there?'), { name: 'jarvis', rest: 'Are you there?' });
   assert.deepEqual(parseWake('Friday, are you there?'), { name: 'friday', rest: 'are you there?' });
   assert.deepEqual(parseWake('Hey Friday'), { name: 'friday', rest: '' });
+  assert.deepEqual(parseWake('Javis, javis.'), { name: 'jarvis', rest: '' });
   assert.deepEqual(parseWake('Um, okay, Jarvis, open Safari.'), { name: 'jarvis', rest: 'open Safari.' });
 });
 
@@ -15,6 +16,14 @@ test('a name starting a sentence after other talk counts, a name mentioned in pa
   assert.deepEqual(parseWake('I love his music, his melodies are phenomenal. Um, okay. Jarvis, what time is it?'), { name: 'jarvis', rest: 'what time is it?' });
   assert.deepEqual(parseWake('That was a great game. Friday, turn it off.'), { name: 'friday', rest: 'turn it off.' });
   assert.deepEqual(parseWake('We met last week. Friday is the deadline.'), { rest: 'We met last week. Friday is the deadline.' });
+});
+
+test('the name as whisper spells it for some accents still wakes Jarvis, at the start only', () => {
+  assert.deepEqual(parseWake('Charvis, what time is it?'), { name: 'jarvis', rest: 'what time is it?' });
+  assert.deepEqual(parseWake('Jarbis.'), { name: 'jarvis', rest: '' });
+  assert.deepEqual(parseWake('Hey, Jav is, open Safari.'), { name: 'jarvis', rest: 'open Safari.' });
+  assert.deepEqual(parseWake("Jarvis's, are you there?"), { name: 'jarvis', rest: 'are you there?' });
+  for (const text of ['Davies said no.', 'Service was slow.', 'I met Charvis yesterday.', 'Java is great.']) assert.deepEqual(parseWake(text), { rest: text }, text);
 });
 
 test('a name at the end, after a comma, counts too', () => {
