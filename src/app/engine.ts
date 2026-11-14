@@ -6,7 +6,7 @@ import { KokoroTTS } from 'kokoro-js';
 import { Assistant } from '../assistant.ts';
 import { createChat } from '../chat.ts';
 import { KeyPool, parseKeys } from '../key-pool.ts';
-import { SPOKEN, TIERS } from '../models.ts';
+import { GROQ_BASE_URL, QUICK, QUICK_VERDICT, SPOKEN, TIERS } from '../models.ts';
 import { PERSONAS } from '../persona.ts';
 import { createTools } from '../tools/index.ts';
 import type { Tool } from '../tools/types.ts';
@@ -44,6 +44,10 @@ try {
   const pool = new KeyPool(parseKeys(process.env.NVIDIA_API_KEYS));
   // Every program Jarvis starts (shell commands, scripts, Chrome) inherits this environment; the keys must not be in it.
   delete process.env.NVIDIA_API_KEYS;
+  // Groq answers conversation and simple actions, much faster; NVIDIA does the rest, and everything when Groq has no keys or is out of allowance.
+  const groqKeys = parseKeys(process.env.GROQ_API_KEYS);
+  delete process.env.GROQ_API_KEYS;
+  const quickChat = groqKeys.length ? createChat(new KeyPool(groqKeys), GROQ_BASE_URL) : undefined;
   const SPEAKER_MODEL = 'Xenova/wavlm-base-plus-sv';
   const [tts, whisper, speakerProcessor, speakerModel, embedder] = await Promise.all([
     // fp32 measured 2.5x faster than the smaller q8 build on this Mac (M2 Pro).
@@ -139,10 +143,12 @@ try {
   const autonomous = process.env.JARVIS_AUTONOMOUS === '1';
   // A one-word answer from the small fast model, for quick yes-or-no judgements.
   const verdict = async (system: string, question: string) => {
-    let answer = '';
-    const router = SPOKEN[1]!;
-    for await (const piece of chat({ model: router.model, extraBody: router.extraBody, maxTokens: 4, timeoutMs: 2500, messages: [{ role: 'system', content: system }, { role: 'user', content: question }] })) answer += piece;
-    return answer;
+    const ask = async (via: typeof chat, router: { model: string; extraBody: Record<string, unknown> }) => {
+      let answer = '';
+      for await (const piece of via({ model: router.model, extraBody: router.extraBody, maxTokens: 4, timeoutMs: 2500, messages: [{ role: 'system', content: system }, { role: 'user', content: question }] })) answer += piece;
+      return answer;
+    };
+    return quickChat ? ask(quickChat, QUICK_VERDICT).catch(() => ask(chat, SPOKEN[1]!)) : ask(chat, SPOKEN[1]!);
   };
 
   // The self-test can stand in a pretend inbox, to check that urgent mail is spoken about unasked.
@@ -196,6 +202,10 @@ try {
   };
   const tools = [handTool, ...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() }), ...initiative.tools(), ...tasks.tools()];
 
+  // What the quick brain may do itself; for anything else it hands over to the main one.
+  const QUICK_TOOLS = ['open_app', 'open_url', 'set_volume', 'weather', 'calendar_events', 'unread_email', 'read_email', 'set_reminder', 'reminders', 'reminder_done', 'snooze_reminder', 'remember', 'memories', 'recall', 'take_screenshot', 'start_screen_recording', 'stop_screen_recording', 'hand_control'];
+  const [quickModel, ...quickBackups] = QUICK;
+
   const assistant = new Assistant({
     // What Jarvis said last helps whisper hear the answer to it ("yes, the second one", names it mentioned).
     transcribe: (audio) => whisper.transcribe(new Blob([encodeWav(audio, MIC_RATE)]), lastSaid.slice(-200)),
@@ -231,6 +241,8 @@ try {
     // 1 to 1.7 s, measured 12 Nov 2026); after 4 s it is given up on. Lightning backs it up first: unlike
     // Bolt it calls tools reliably when given the whole tool list (Bolt answered in words 8 times of 8).
     model: { model: SPOKEN[0]!.model, extraBody: SPOKEN[0]!.extraBody, fallbacks: [SPOKEN[2]!, SPOKEN[1]!], timeoutMs: 4000, hedgeMs: 2500 },
+    // Groq normally starts in about half a second; a model silent for 1.2 s is joined by the next, and given up on after 3 s.
+    quick: quickChat && { chat: quickChat, model: { ...quickModel!, fallbacks: quickBackups, timeoutMs: 3000, hedgeMs: 1200 }, tools: tools.filter((tool) => QUICK_TOOLS.includes(tool.name)) },
     personas: PERSONAS,
     voiceLock,
     autonomous,

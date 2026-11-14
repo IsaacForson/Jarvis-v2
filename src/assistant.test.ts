@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Assistant, type AssistantEvent } from './assistant.ts';
+import { Assistant, type AssistantEvent, MORE_TOOLS } from './assistant.ts';
 import type { ChatRequest, ToolCall } from './chat.ts';
 import type { Tool } from './tools/types.ts';
 import type { VoiceCheck } from './voice-lock.ts';
@@ -23,10 +23,14 @@ const setup = (
     /** Tool calls the model makes, round by round; a round with none ends the reply. */
     calls?: ToolCall[][];
     onSpeak?: (text: string) => void | Promise<void>;
+    /** A quick brain: its answers and tool calls in order (a missing answer means it is unreachable), and the tools it has. */
+    quick?: { replies: (string[] | undefined)[]; calls?: ToolCall[][]; tools?: Tool[] };
   } = {},
 ) => {
   const events: AssistantEvent[] = [];
   const requests: ChatRequest[] = [];
+  const quickRequests: ChatRequest[] = [];
+  const quickRounds = [...(overrides.quick?.calls ?? [])];
   const checks_: string[] = [];
   const heard = [...(overrides.heard ?? [])];
   const rounds = [...(overrides.calls ?? [])];
@@ -55,7 +59,21 @@ const setup = (
     },
     emit: (event) => events.push(event),
     model: { model: 'fast' },
-    personas: { jarvis: { voice: 'george', prompt: 'Be Jarvis.' }, friday: { voice: 'emma', prompt: 'Be Friday.' } },
+    quick: overrides.quick && {
+      chat: (request) => {
+        quickRequests.push(structuredClone({ ...request, signal: undefined }));
+        const pieces = overrides.quick!.replies.shift();
+        const calls = quickRounds.shift();
+        return (async function* () {
+          if (!pieces) throw new Error('quick model offline');
+          yield* pieces;
+          return calls;
+        })();
+      },
+      model: { model: 'quick', maxTokens: 500 },
+      tools: overrides.quick.tools ?? [],
+    },
+    personas: { jarvis: { voice: 'george', prompt: 'Be Jarvis.', brief: 'Be Jarvis, briefly.' }, friday: { voice: 'emma', prompt: 'Be Friday.' } },
     voiceLock: overrides.voice && {
       check: async () => checks.shift() ?? { result: 'open' },
       beginEnrolment: () => void lockCalls.push('enrol'),
@@ -75,7 +93,7 @@ const setup = (
     events
       .filter((e) => e.type !== 'timing')
       .map((e) => (e.type === 'heard' || e.type === 'speech' ? `${e.type}:${e.text}` : e.type === 'error' ? `error:${e.message}` : e.type === 'awake' ? `awake:${e.awake}` : e.type === 'voice' ? `voice:${e.result}` : e.type === 'tool' ? `tool:${e.status}` : e.type));
-  return { assistant, events, requests, summary, voices, lockCalls, toolChecks: checks_ };
+  return { assistant, events, requests, quickRequests, summary, voices, lockCalls, toolChecks: checks_ };
 };
 
 test('a turn is heard, answered sentence by sentence, then done', async () => {
@@ -538,4 +556,78 @@ test('a scheduled turn runs from an instruction, like the morning briefing', asy
   assert.equal(await assistant.initiate('Give the briefing.'), true);
   assert.equal(requests[0]?.messages.at(-1)?.content, '(Nothing was said; this is scheduled.) Give the briefing.');
   assert.deepEqual(summary(), ['awake:true', 'thinking', 'speech:Good morning, sir.', 'done']);
+});
+
+const names = (request?: ChatRequest) => request?.tools?.map((tool) => (tool.type === 'function' ? tool.function.name : ''));
+
+test('the quick brain answers conversation and simple actions by itself, with brief instructions and its few tools', async () => {
+  ran.length = 0;
+  const { assistant, summary, requests, quickRequests } = setup([], {
+    heard: ['Good morning.', 'Open Safari.'],
+    tools: [safeTool, riskyTool],
+    quick: { replies: [['Good morning, sir.'], [], ['Safari is open.']], calls: [[], [call('open_app', { name: 'Safari' })]], tools: [safeTool] },
+  });
+  await assistant.hear(audio);
+  await assistant.hear(audio);
+  assert.deepEqual(summary(), ['heard:Good morning.', 'thinking', 'speech:Good morning, sir.', 'done', 'heard:Open Safari.', 'thinking', 'tool:done', 'speech:Safari is open.', 'done']);
+  assert.deepEqual(ran, ['open Safari']);
+  assert.equal(requests.length, 0, 'the main brain was never asked');
+  assert.match(String(quickRequests[0]?.messages[0]?.content), /^Be Jarvis, briefly\./);
+  assert.deepEqual(names(quickRequests[0]), ['open_app', MORE_TOOLS.function.name]);
+  assert.equal(quickRequests[0]?.maxTokens, 500);
+});
+
+test('when the quick brain asks for more, the main one takes the turn over and nothing the quick one said is spoken', async () => {
+  ran.length = 0;
+  const { assistant, summary, requests, quickRequests } = setup([[], ['It is in the Trash.']], {
+    heard: ['Trash the report.'],
+    tools: [safeTool, riskyTool],
+    autonomous: false,
+    calls: [[call('open_app', { name: 'Finder' })]],
+    quick: { replies: [['Let me see.']], calls: [[call(MORE_TOOLS.function.name, {})]], tools: [safeTool] },
+  });
+  await assistant.hear(audio);
+  assert.deepEqual(summary(), ['heard:Trash the report.', 'thinking', 'tool:done', 'speech:It is in the Trash.', 'done']);
+  assert.equal(quickRequests.length, 1, 'the quick brain is not asked again this turn');
+  assert.deepEqual(names(requests[0]), ['open_app', 'move_to_trash']);
+  assert.match(String(requests[0]?.messages[0]?.content), /^Be Jarvis\./);
+  assert.deepEqual(requests[0]?.messages.at(-1), { role: 'user', content: 'Trash the report.' }, 'the main brain starts from the question, not the hand-over');
+});
+
+test('the main brain also takes over when the quick one is unreachable, says nothing, or talks where a tool was needed', async () => {
+  const offline = setup([['Paris, sir.']], { heard: ['Capital of France?'], quick: { replies: [undefined] } });
+  await offline.assistant.hear(audio);
+  assert.deepEqual(offline.summary(), ['heard:Capital of France?', 'thinking', 'tool:failed', 'speech:Paris, sir.', 'done']);
+
+  const silent = setup([['Paris, sir.']], { heard: ['Capital of France?'], quick: { replies: [[]] } });
+  await silent.assistant.hear(audio);
+  assert.deepEqual(silent.summary(), ['heard:Capital of France?', 'thinking', 'speech:Paris, sir.', 'done']);
+
+  ran.length = 0;
+  const talker = setup([[], ['Safari is open.']], {
+    heard: ['Open Safari.'],
+    tools: [safeTool],
+    needsTool: true,
+    calls: [[call('open_app', { name: 'Safari' })]],
+    quick: { replies: [['I have opened Safari.']], tools: [safeTool] },
+  });
+  await talker.assistant.hear(audio);
+  assert.deepEqual(talker.summary(), ['heard:Open Safari.', 'thinking', 'tool:done', 'speech:Safari is open.', 'done']);
+  assert.deepEqual(ran, ['open Safari']);
+});
+
+test('the quick brain is sent only the words of earlier exchanges, never their tool results', async () => {
+  ran.length = 0;
+  const { assistant, quickRequests } = setup([], {
+    heard: ['Open Safari.', 'Thank you.'],
+    tools: [safeTool],
+    quick: { replies: [[], ['Safari is open.'], ['A pleasure, sir.']], calls: [[call('open_app', { name: 'Safari' })]], tools: [safeTool] },
+  });
+  await assistant.hear(audio);
+  await assistant.hear(audio);
+  assert.deepEqual(quickRequests[2]?.messages.slice(1), [
+    { role: 'user', content: 'Open Safari.' },
+    { role: 'assistant', content: 'Safari is open.' },
+    { role: 'user', content: 'Thank you.' },
+  ]);
 });

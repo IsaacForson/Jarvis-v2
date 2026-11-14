@@ -18,10 +18,10 @@ export function parseKeys(value: string | undefined): string[] {
   return [...new Set((value ?? '').split(/[\s,]+/).filter(Boolean))];
 }
 
-/** The keys as `npm run keys-to-keychain` stored them in the macOS Keychain, or '' if they are not there. */
-export function keychainKeys(): string {
+/** One provider's keys as `npm run keys-to-keychain` stored them in the macOS Keychain, or '' if they are not there. */
+export function keychainKeys(provider: 'nvidia' | 'groq' = 'nvidia'): string {
   try {
-    return execFileSync('/usr/bin/security', ['find-generic-password', '-s', 'Jarvis', '-a', 'nvidia-api-keys', '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('/usr/bin/security', ['find-generic-password', '-s', 'Jarvis', '-a', `${provider}-api-keys`, '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     return '';
   }

@@ -32,7 +32,14 @@ export type AssistantDeps = {
   chat(request: ChatRequest): AsyncGenerator<string, ToolCall[] | void>;
   speak(text: string, voice: string): Promise<Speech>;
   emit(event: AssistantEvent): void;
-  model: Pick<ChatRequest, 'model' | 'extraBody' | 'fallbacks' | 'timeoutMs' | 'hedgeMs'>;
+  model: Model;
+  /**
+   * A quicker brain, tried first: for conversation and simple actions, with only the few tools given
+   * here and the persona's brief instructions. The main brain (`chat`, `model`, `tools`) takes over for
+   * the rest of the turn when the quick one asks for more (calls MORE_TOOLS), fails, says nothing, or
+   * talks where a tool was needed. Nothing the quick one said in that reply is spoken.
+   */
+  quick?: { chat: AssistantDeps['chat']; model: Model; tools: Tool[] };
   personas: Record<PersonaName, Persona>;
   /** When given and enrolled, only the owner's voice is answered. */
   voiceLock?: Pick<VoiceLock, 'check' | 'beginEnrolment' | 'forget'>;
@@ -60,7 +67,23 @@ export type AssistantDeps = {
   now?: () => Date;
 };
 
+type Model = Pick<ChatRequest, 'model' | 'extraBody' | 'fallbacks' | 'timeoutMs' | 'hedgeMs' | 'maxTokens'>;
 type Message = OpenAI.Chat.ChatCompletionMessageParam;
+
+/** Not a real tool: the quick brain calls it to hand the request to the main brain, which has every tool. */
+export const MORE_TOOLS = {
+  type: 'function' as const,
+  function: {
+    name: 'more_tools',
+    description:
+      'Hand this request to your fuller self, which can do everything else: search and browse the web, find, read, write and edit files, run shell commands and AppleScript, see and click the screen, work inside any app (its buttons, fields and menus), install apps, run background and scheduled tasks, and forget things. Call it at once, saying nothing, whenever the request needs any of that, needs news or other facts newer than your knowledge, or takes several steps. Do not call it for conversation, general knowledge, explanations, opinions or arithmetic: answer those yourself. Never tell him you cannot do something; call this instead.',
+    parameters: { type: 'object', properties: {} },
+  },
+};
+/** The quick brain is sent only the words of the last few exchanges: tool results can be pages long. */
+const QUICK_EXCHANGES = 6;
+const wordsOnly = (exchange: Message[]): Message[] =>
+  exchange.flatMap((message) => (message.role === 'user' || (message.role === 'assistant' && typeof message.content === 'string' && message.content) ? [{ role: message.role, content: message.content } as Message] : []));
 type Approval = { turn: Turn; answer(approved: boolean): void };
 type Turn = { id: number; abort: AbortController; startedAt: number; transcriptMs: number; /** "One moment" has been said. */ acknowledged?: boolean };
 /** Whole exchanges are kept or dropped together, so a tool's result never loses the request it answers. */
@@ -332,24 +355,33 @@ export class Assistant {
     const question: Message = { role: 'user', content: text };
     const clock = now().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' });
     const extra = context?.();
-    const messages: Message[] = [{ role: 'system', content: `${personas[this.#persona].prompt}\nIt is now ${clock}.${extra ? `\n${extra}` : ''}` }, ...this.#history.flat(), question];
+    const persona = personas[this.#persona];
+    const history = this.#history;
     const exchange: Message[] = [question];
-    const definitions = tools.map((tool) => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
+    const define = (list: Tool[]) => list.map((tool) => ({ type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters } }));
+    const main = { chat, model, definitions: define(tools) };
+    // The quick brain goes first when there is one; once the main one takes over it keeps the turn.
+    let quick = this.#deps.quick && { ...this.#deps.quick, definitions: [...define(this.#deps.quick.tools), MORE_TOOLS] };
+    const messages = (): Message[] => [
+      { role: 'system', content: `${(quick && persona.brief) || persona.prompt}\nIt is now ${clock}.${extra ? `\n${extra}` : ''}` },
+      ...(quick ? history.slice(-QUICK_EXCHANGES).flatMap(wordsOnly) : history.flat()),
+      ...exchange,
+    ];
     let spoken = '';
     let finished = false;
     let firstWordsMs = 0;
     emit({ type: 'thinking', turn: turn.id });
 
-    const previous = this.#history.at(-1)?.findLast((message) => message.role === 'assistant' && typeof message.content === 'string')?.content;
+    const previous = history.at(-1)?.findLast((message) => message.role === 'assistant' && typeof message.content === 'string')?.content;
     // Asked alongside the first model call, so it costs no time; a failed check counts as "no tool needed".
-    let mustAct = definitions.length && needsTool ? needsTool(text, typeof previous === 'string' ? previous : '').catch(() => false) : undefined;
+    let mustAct = main.definitions.length && needsTool ? needsTool(text, typeof previous === 'string' ? previous : '').catch(() => false) : undefined;
     let force = false;
 
     try {
       for (let round = 0; round < MAX_ROUNDS && live() && !finished; round++) {
-        const stream = chat({ ...model, maxTokens: 1000, signal: turn.abort.signal, messages, tools: definitions, ...(force ? { toolChoice: 'required' as const } : {}) });
-        const checking = force ? undefined : mustAct;
-        mustAct = undefined; // only the first reply is checked
+        const brain = quick ?? main;
+        const stream = brain.chat({ maxTokens: 1000, ...brain.model, signal: turn.abort.signal, messages: messages(), tools: brain.definitions, ...(force ? { toolChoice: 'required' as const } : {}) });
+        const checking = force ? undefined : mustAct; // only the first reply is checked
         force = false;
         let calls: ToolCall[] = [];
         const pieces = (async function* () {
@@ -370,21 +402,33 @@ export class Assistant {
           answering.spoken = true;
           return true;
         };
-        // If a tool is needed, the words are held back until it is known whether the model called one.
+        // Words are held back while it is not yet known whether they will stand: the quick brain's until
+        // its reply is whole (it may hand over), and anyone's while a tool is needed and none is called yet.
         const held: string[] = [];
-        for await (const sentence of sentences(pieces)) {
-          if (checking && (await checking)) held.push(sentence);
-          else if (!(await voice(sentence))) break;
+        try {
+          for await (const sentence of sentences(pieces)) {
+            if (quick || (checking && (await checking))) held.push(sentence);
+            else if (!(await voice(sentence))) break;
+          }
+        } catch (error) {
+          if (!quick || !live()) throw error;
+          emit({ type: 'tool', turn: turn.id, status: 'failed', detail: `The quick model failed (${error instanceof Error ? error.message : String(error)}); the main one is answering` });
+          quick = undefined;
+          continue;
         }
         if (!live()) break;
-        if (checking && (await checking)) {
-          if (calls.length === 0) {
-            force = true; // it talked instead of acting: discard the talk and ask again, tool call required
-            continue;
-          }
-          for (const sentence of held) if (!(await voice(sentence))) break;
-          if (!live()) break;
+        const needed = checking ? await checking : false;
+        if (quick && (calls.some((call) => call.name === MORE_TOOLS.function.name) || (calls.length === 0 && (needed || held.length === 0)))) {
+          quick = undefined; // hand over: the main brain answers this round afresh, and is checked the same way
+          continue;
         }
+        mustAct = undefined;
+        if (needed && calls.length === 0) {
+          force = true; // it talked instead of acting: discard the talk and ask again, tool call required
+          continue;
+        }
+        for (const sentence of held) if (!(await voice(sentence))) break;
+        if (!live()) break;
 
         if (calls.length === 0) {
           // No more actions: this was the reply. An empty one after actions still deserves a word.
@@ -400,12 +444,10 @@ export class Assistant {
           content: said || null,
           tool_calls: calls.map((call) => ({ id: call.id, type: 'function' as const, function: { name: call.name, arguments: call.arguments } })),
         };
-        messages.push(request);
         exchange.push(request);
         for (const call of calls) {
           // Every request must get an answer, even after an interrupt, or the conversation record is invalid.
           const result: Message = { role: 'tool', tool_call_id: call.id, content: live() ? await this.#useTool(turn, call, spoken !== '') : 'Cancelled.' };
-          messages.push(result);
           exchange.push(result);
         }
       }

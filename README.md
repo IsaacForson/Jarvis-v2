@@ -13,7 +13,12 @@ Needs the keys in `.env`, `brew install whisper-cpp` and the speech model in `mo
 Spotlight or Launchpad, and macOS lists "Jarvis" (not Cursor or Terminal) under Microphone, Accessibility, Screen
 Recording and Camera, to be allowed once. After code changes run `npm run build` and reopen it; rebuild the app itself
 only after upgrading Electron or moving this folder, since macOS then asks for the permissions again.
-`npm run keys-to-keychain` moves the NVIDIA keys out of `.env` into the macOS Keychain; Jarvis reads them from either.
+`npm run keys-to-keychain` moves the NVIDIA and Groq keys out of `.env` into the macOS Keychain; Jarvis reads them from either.
+
+Two brains: with Groq keys (`GROQ_API_KEYS`, optional), conversation and simple actions (opening apps, volume, weather,
+calendar, email, reminders, memory, screenshots) are answered by Groq, which starts replying in about half a second.
+Everything else (the web, files, the screen, other apps, long jobs) is handed to the NVIDIA models, which also take over
+whenever Groq is unreachable or its keys have used their minute's allowance (8,000 tokens a minute each).
 
 - Ctrl+Option+J turns the microphone off and on.
 - Ctrl+Option+S stops Jarvis talking.

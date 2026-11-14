@@ -19,6 +19,7 @@ try {
 }
 // The keys are in .env, or in the Keychain once `npm run keys-to-keychain` has moved them. With neither, the engine says so in the window.
 process.env.NVIDIA_API_KEYS ||= keychainKeys();
+process.env.GROQ_API_KEYS ||= keychainKeys('groq'); // optional: without them NVIDIA answers everything
 // Opened from Finder or at login, an app gets a bare PATH without Homebrew, where whisper-server, brew and gh live.
 process.env.PATH = [...new Set(['/opt/homebrew/bin', '/usr/local/bin', ...(process.env.PATH ?? '').split(':')])].filter(Boolean).join(':');
 

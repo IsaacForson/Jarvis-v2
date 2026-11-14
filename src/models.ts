@@ -35,3 +35,19 @@ export const SPOKEN: Tier[] = [
   { model: 'nvidia/nemotron-3.5-bolt-e4b', extraBody: { chat_template_kwargs: { enable_thinking: false } } },
   TIERS.easy,
 ];
+
+export const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
+
+/**
+ * Groq's models, for the quick brain: conversation and simple actions. Measured 14 Nov 2026 with a few
+ * tools: gpt-oss-120b replied or called the right tool in 0.4 to 0.7 s, every time; gpt-oss-20b was as
+ * quick but invented an argument; qwen answered in words that it had acted, without calling a tool.
+ * Each key allows 8,000 tokens a minute, and the reply's token allowance counts towards it, so the
+ * quick brain gets brief instructions, few tools and a small allowance.
+ */
+export const QUICK: (Tier & { maxTokens: number })[] = [
+  { model: 'openai/gpt-oss-120b', extraBody: { reasoning_effort: 'low' }, maxTokens: 500 },
+  { model: 'openai/gpt-oss-20b', extraBody: { reasoning_effort: 'low' }, maxTokens: 500 },
+];
+/** One-word judgements: 20 of 20 sample requests routed right in about 0.35 s. */
+export const QUICK_VERDICT: Tier = { model: 'qwen/qwen3.8-27b', extraBody: { reasoning_effort: 'none' } };
