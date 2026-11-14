@@ -46,7 +46,7 @@ export const macTools: Tool[] = [
       },
       required: ['purpose', 'script'],
     },
-    // A script can do anything an app can, so it is always confirmed. The script itself is shown in the activity panel.
+    // A script can do anything an app can, so it is always confirmed. The script itself is written to the activity log.
     approval: (args) => `run a script on your Mac to ${text(args, 'purpose')}`,
     run: async (args) => clip((await osascript(text(args, 'script'))) || 'Done.'),
   },

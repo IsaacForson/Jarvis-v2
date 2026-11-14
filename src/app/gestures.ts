@@ -1,5 +1,5 @@
 // Turns hand positions from the webcam, frame by frame, into gestures: pinch to grab, move to drag,
-// open the fingers to let go, and a quick sideways sweep of an open hand to swipe.
+// and open the fingers to let go.
 
 /** One hand's 21 landmarks, as MediaPipe gives them: x and y from 0 to 1 across the camera picture. */
 export type Hand = { x: number; y: number }[];
@@ -8,8 +8,7 @@ export type Gesture =
   | { type: 'grab' }
   /** How far the hand moved since the last frame, as a share of the picture, already mirrored so right is the user's right. */
   | { type: 'drag'; dx: number; dy: number }
-  | { type: 'release' }
-  | { type: 'swipe'; direction: 'left' | 'right' };
+  | { type: 'release' };
 
 const WRIST = 0;
 const THUMB_TIP = 4;
@@ -20,10 +19,6 @@ const PINCH = 0.35;
 const OPEN = 0.5;
 /** A pinch must last this many frames, so a passing flicker grabs nothing. */
 const HOLD_FRAMES = 2;
-/** A swipe: the hand crosses this share of the picture within the time, mostly sideways. */
-const SWIPE_DISTANCE = 0.25;
-const SWIPE_MS = 400;
-const SWIPE_REST_MS = 800;
 /** Hand movement is smoothed over frames, so a shaky hand gives a steady drag. */
 const SMOOTHING = 0.5;
 
@@ -33,13 +28,10 @@ export class Gestures {
   #pinching = false;
   #pinchFrames = 0;
   #last: { x: number; y: number } | undefined;
-  #trail: { x: number; y: number; at: number }[] = [];
-  #restUntil = 0;
 
-  /** Feeds one camera frame (no hand: undefined) taken at `at` milliseconds; returns what the hand did. */
-  update(hand: Hand | undefined, at: number): Gesture[] {
+  /** Feeds one camera frame (no hand: undefined); returns what the hand did. */
+  update(hand: Hand | undefined): Gesture[] {
     if (!hand || hand.length < 21) {
-      this.#trail = [];
       this.#last = undefined;
       this.#pinchFrames = 0;
       if (!this.#pinching) return [];
@@ -57,10 +49,7 @@ export class Gestures {
       this.#pinchFrames = gap < PINCH ? this.#pinchFrames + 1 : 0;
       if (this.#pinchFrames >= HOLD_FRAMES) {
         this.#pinching = true;
-        this.#trail = [];
         out.push({ type: 'grab' });
-      } else if (gap > OPEN) {
-        out.push(...this.#swipe(raw, at));
       }
     } else if (gap > OPEN) {
       this.#pinching = false;
@@ -73,18 +62,6 @@ export class Gestures {
     }
     this.#last = point;
     return out;
-  }
-
-  #swipe(point: { x: number; y: number }, at: number): Gesture[] {
-    this.#trail = [...this.#trail.filter((one) => at - one.at <= SWIPE_MS), { ...point, at }];
-    if (at < this.#restUntil) return [];
-    const first = this.#trail[0]!;
-    const dx = point.x - first.x;
-    const dy = point.y - first.y;
-    if (Math.abs(dx) < SWIPE_DISTANCE || Math.abs(dy) > Math.abs(dx) * 0.5) return [];
-    this.#trail = [];
-    this.#restUntil = at + SWIPE_REST_MS;
-    return [{ type: 'swipe', direction: dx > 0 ? 'right' : 'left' }];
   }
 }
 

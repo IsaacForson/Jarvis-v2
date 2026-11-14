@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake, parseYesNo } from './wake.ts';
+import { isEndMeeting, isForgetVoiceCommand, isStartDictation, isStartMeeting, isStopDictation, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake, parseYesNo } from './wake.ts';
 
 test('a name at the start says who is addressed, with or without a greeting', () => {
   assert.deepEqual(parseWake('Hey Jarvis.'), { name: 'jarvis', rest: '' });
@@ -54,4 +54,16 @@ test('yes-or-no answers are understood, with "no" winning when both are said', (
   for (const text of ['Yes.', 'Yeah, go ahead.', 'Sure, do it', 'Okay.', 'Please do.']) assert.equal(parseYesNo(text), true, text);
   for (const text of ['No.', "Don't.", 'Cancel that', 'Never mind.', 'No, okay, leave it.', 'Yes... no, stop.']) assert.equal(parseYesNo(text), false, text);
   for (const text of ['What was that?', 'Maybe later', '']) assert.equal(parseYesNo(text), undefined, text);
+});
+
+test('dictation and meeting-notes commands are recognised, and passing mentions are not', () => {
+  for (const said of ['Start dictation.', 'Type what I say.', 'Type this', 'Dictation mode.', 'Please take dictation']) assert.equal(isStartDictation(said), true, said);
+  for (const said of ['What is dictation?', 'Type the address into Safari and press return and then read the page to me']) assert.equal(isStartDictation(said), false, said);
+  for (const said of ['Stop dictation.', 'Stop typing', 'End the dictation', 'Dictation off.']) assert.equal(isStopDictation(said), true, said);
+  assert.equal(isStopDictation('We should stop for lunch.'), false);
+  for (const said of ['Take notes of this meeting.', 'Start taking notes', 'Take meeting notes.', 'Start the meeting.', 'Take minutes']) assert.equal(isStartMeeting(said), true, said);
+  assert.equal(isStartMeeting('Did you take my notes off the desk?'), false);
+  assert.equal(isStartMeeting('What meetings do I have today?'), false);
+  for (const said of ['End the meeting.', 'Stop taking notes', 'The meeting is over.', 'Finish the notes']) assert.equal(isEndMeeting(said), true, said);
+  assert.equal(isEndMeeting('When does the meeting end?'), false);
 });

@@ -1,5 +1,6 @@
 // The speech-and-thinking process. It runs apart from the window so heavy work never stalls the orb.
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { AutoModelForXVector, AutoProcessor, pipeline } from '@huggingface/transformers';
 import { KokoroTTS } from 'kokoro-js';
@@ -14,6 +15,7 @@ import { factsPrompt, Memory, memoryTools } from '../tools/memory.ts';
 import { exec } from '../tools/exec.ts';
 import { Initiative, type Mail } from '../initiative.ts';
 import { runJob } from '../jobs.ts';
+import { createNotes } from '../meeting.ts';
 import { createWaker } from '../power.ts';
 import { recentFailures } from '../tools/deploys.ts';
 import { Tasks } from '../tasks.ts';
@@ -24,7 +26,7 @@ import type { ToEngine, ToRenderer } from './messages.ts';
 
 const SPEED = 1.1; // the stock pace sounded slightly slow
 const MIC_RATE = 16_000;
-const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TOOL also when the user tells a lasting fact or preference about himself, the people in his life or his projects, or asks what was said in an earlier conversation, or asks to forget something, or wants a reminder, alarm or repeating task set, changed, snoozed, cancelled or marked done, or wants something done later or regularly, or asks how a job went, or asks about the weather, or replies to a reminder. Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
+const ROUTER = `You route requests for a voice assistant that can use tools on the user's Mac: see the screen, open and control apps, read and write files, run commands, read the calendar and email, and browse the web. The assistant already knows the current date and time. Reply with one word. Reply TOOL if answering this request correctly requires seeing, reading, looking up or changing anything on the Mac or the internet, including when the request continues such a task ("yes, the second one"). Reply TOOL also when the user tells a lasting fact or preference about himself, the people in his life or his projects, or asks what was said in an earlier conversation, or asks to forget something, or wants a reminder, alarm or repeating task set, changed, snoozed, cancelled or marked done, or wants something done later or regularly, or asks how a job went, or asks about the weather, or replies to a reminder, or wants music played, paused or skipped, or a shortcut run, or refers to what he has copied or selected on screen ("explain this", "translate what I copied"), or wants an email or a message sent to someone. Reply TALK if it is conversation, opinion, arithmetic, general knowledge or a question about the conversation itself.`;
 const URGENCY = `You sort email for a busy person. Reply with one word. Reply URGENT only if this email needs his attention within hours: a real person waiting on him or asking for something, a deadline today, something broken, a security alert about his own accounts, or an interview or meeting invitation. Reply NOT for newsletters, promotions, marketing, social media, automatic confirmations and status updates (such as "your application was received" or "application update"), and other routine notifications.`;
 // large-v3-turbo hears accents and names far better than small.en, for about 0.7 s more per sentence
 // (measured 12 Nov 2026 on this Mac: 970 ms against 270 ms). JARVIS_WHISPER_MODEL picks another file.
@@ -34,6 +36,7 @@ const speechModel = (root: string) => {
   const turbo = join(root, 'models/ggml-large-v3-turbo-q5_0.bin');
   return existsSync(turbo) ? turbo : join(root, 'models/ggml-small.en.bin');
 };
+const NOTES = `These are the words heard in a meeting through one microphone, in order. Speakers are not marked, and speech recognition may have misheard words: work out what was meant. Reply in two parts separated by a line holding only ---. First, what a personal assistant would say aloud to his employer about the meeting: two or three plain sentences, with no lists, markdown or symbols. Second, the written notes in markdown: a Summary paragraph, then Decisions, Action items (with who, when that was said) and Open questions as lists; leave out any section with nothing in it.`;
 const SUMMARY = `Rewrite this report as what a personal assistant would say aloud to his employer: two or three short plain sentences with the outcome and the key figures. No preamble, lists, headings, markdown or symbols; write "dollars", not "$".`;
 const send = (message: ToRenderer) => process.parentPort.postMessage(message);
 
@@ -167,6 +170,7 @@ try {
     upcoming: hands.upcoming,
     idleSeconds: async () => Number(/"HIDIdleTime" = (\d+)/.exec(await exec('ioreg', ['-c', 'IOHIDSystem', '-d', '4']))?.[1] ?? 0) / 1e9,
     briefingAt: process.env.JARVIS_BRIEFING_TIME,
+    recapAt: process.env.JARVIS_RECAP_TIME,
   });
   const tasks = new Tasks({
     dbPath: memoryFile,
@@ -193,7 +197,7 @@ try {
   const handTool: Tool = {
     name: 'hand_control',
     description:
-      'Switch hand control on or off. When on, the webcam watches his hand: pinch thumb and finger to grab the hologram and move the hand to move it, open the hand to let go, and sweep an open hand left to open the panels or right to close them.',
+      'Switch hand control on or off. When on, the webcam watches his hand: pinch thumb and finger to grab the hologram and move the hand to move it, and open the hand to let go.',
     parameters: { type: 'object', properties: { on: { type: 'boolean' } }, required: ['on'] },
     run: async (args) => {
       send({ type: 'hand-control', on: args.on === true });
@@ -203,7 +207,7 @@ try {
   const tools = [handTool, ...hands.tools, ...memoryTools(memory, { onForget: () => assistant.forgetConversation() }), ...initiative.tools(), ...tasks.tools()];
 
   // What the quick brain may do itself; for anything else it hands over to the main one.
-  const QUICK_TOOLS = ['open_app', 'open_url', 'set_volume', 'weather', 'calendar_events', 'unread_email', 'read_email', 'set_reminder', 'reminders', 'reminder_done', 'snooze_reminder', 'remember', 'memories', 'recall', 'take_screenshot', 'start_screen_recording', 'stop_screen_recording', 'hand_control'];
+  const QUICK_TOOLS = ['open_app', 'open_url', 'set_volume', 'weather', 'calendar_events', 'unread_email', 'read_email', 'set_reminder', 'reminders', 'reminder_done', 'snooze_reminder', 'remember', 'memories', 'recall', 'take_screenshot', 'start_screen_recording', 'stop_screen_recording', 'hand_control', 'music', 'list_shortcuts', 'run_shortcut', 'read_clipboard', 'read_selection', 'write_clipboard'];
   const [quickModel, ...quickBackups] = QUICK;
 
   const assistant = new Assistant({
@@ -246,6 +250,18 @@ try {
     personas: PERSONAS,
     voiceLock,
     autonomous,
+    // Dictation: typed at the keyboard into whatever has focus.
+    typeText: async (text) => void (await exec(join(root, 'dist/ax'), ['type', text], { timeoutMs: 20_000 })),
+    // Meeting notes are written up by the deep model, which can take its time; the everyday one stands in if it is down.
+    notes: createNotes({
+      dir: join(homedir(), 'Documents', 'Meeting notes'),
+      write: async (transcript) => {
+        let reply = '';
+        for await (const piece of chat({ model: TIERS.hard.model, extraBody: TIERS.hard.extraBody, fallbacks: [TIERS.medium], maxTokens: 3000, timeoutMs: 60_000, messages: [{ role: 'system', content: NOTES }, { role: 'user', content: transcript }] })) reply += piece;
+        if (!reply.trim()) throw new Error('the model returned nothing');
+        return reply;
+      },
+    }),
   });
 
   process.parentPort.on('message', async ({ data }: { data: ToEngine }) => {

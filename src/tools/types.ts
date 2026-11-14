@@ -10,6 +10,8 @@ export type Tool = {
    * or undefined when the action is safe to run unasked. Omitted means never ask.
    */
   approval?(args: Args): string | undefined;
+  /** Asked about even when Jarvis works on its own, like deleting: sending a message cannot be taken back. */
+  alwaysAsk?: boolean;
   /** Takes long enough that Jarvis should say "one moment" first. */
   slow?: boolean;
   /** Does the work and returns what the model should know about the outcome. Throws on failure. */

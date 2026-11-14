@@ -260,3 +260,22 @@ test('a mistyped briefing time means 08:00', () => {
   assert.deepEqual(briefingTime('7:30'), [7, 30]);
   for (const bad of [undefined, '', '8am', '25:00', '08:61']) assert.deepEqual(briefingTime(bad), [8, 0]);
 });
+
+test('the evening recap is given once, after its time, and only while he is at the Mac', async () => {
+  let idle = 600;
+  const { initiative, briefings, at, tool } = await setup('2026-11-12T20:59', { briefingAt: '08:00', recapAt: '21:00', idleSeconds: async () => idle });
+  await tool('set_reminder').run({ text: 'call Dana', at: '2026-11-13T10:00' });
+  const recaps = () => briefings.filter((one) => /evening recap/.test(one));
+  await initiative.tick();
+  at('2026-11-12T21:00');
+  await initiative.tick();
+  assert.equal(recaps().length, 0, 'not before its time, and not to an empty room');
+  idle = 5;
+  await initiative.tick();
+  await initiative.tick();
+  assert.equal(recaps().length, 1);
+  assert.match(recaps()[0]!, /his reminders: Fri 13 Nov, 10:00 call Dana/);
+  at('2026-11-13T21:30');
+  await initiative.tick();
+  assert.equal(recaps().length, 2, 'and again the next evening');
+});

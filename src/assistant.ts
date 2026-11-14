@@ -5,7 +5,7 @@ import type { Persona, PersonaName } from './persona.ts';
 import { DELETION } from './tools/rules.ts';
 import type { Args, Tool } from './tools/types.ts';
 import type { VoiceCheck, VoiceLock } from './voice-lock.ts';
-import { isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, parseHandover, parseWake, parseYesNo } from './wake.ts';
+import { isEndMeeting, isForgetVoiceCommand, isLearnVoiceCommand, isSleepCommand, isStartDictation, isStartMeeting, isStopDictation, parseHandover, parseWake, parseYesNo } from './wake.ts';
 
 export type Speech = { samples: Float32Array; sampleRate: number };
 
@@ -62,6 +62,13 @@ export type AssistantDeps = {
   approvalMs?: number;
   /** Act without asking first, except deleting. Payments, passwords and card numbers are still refused. */
   autonomous?: boolean;
+  /** Types text into the app in front, for dictation ("start dictation" ... "stop dictation"). */
+  typeText?(text: string): Promise<void>;
+  /**
+   * Meeting notes ("take notes of this meeting" ... "Jarvis, end the meeting"): `add` keeps one thing that
+   * was said, by anyone; `end` writes the notes up and returns a short summary to say aloud.
+   */
+  notes?: { start(): void; add(text: string): void; end(): Promise<string> };
   /** More instructions, read afresh every turn: what memory holds about the user. */
   context?: () => string;
   now?: () => Date;
@@ -113,6 +120,8 @@ export class Assistant {
   /** Something was forgotten during the turn under way, so it must not be kept either. */
   #forgetting = false;
   #userSpeaking = false;
+  /** While set, what is heard is typed (dictation) or written down (meeting) instead of answered. */
+  #mode: 'dictation' | 'meeting' | undefined;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(deps: AssistantDeps) {
@@ -145,9 +154,19 @@ export class Assistant {
     if (!active) this.#armHold();
   }
 
-  /** Mid-reply, waiting on a yes or no, or the user is talking: speaking up now would cut across him. */
+  /** Mid-reply, waiting on a yes or no, in a meeting, or the user is talking: speaking up now would cut across him. */
   get busy(): boolean {
-    return this.#answering !== undefined || this.#approval !== undefined || this.#carry !== '' || this.#userSpeaking;
+    return this.#answering !== undefined || this.#approval !== undefined || this.#carry !== '' || this.#userSpeaking || this.#mode === 'meeting';
+  }
+
+  /** Speaks a longer text sentence by sentence; returns what was said before any interruption. */
+  async #sayAll(turn: Turn, text: string): Promise<string[]> {
+    const spoken: string[] = [];
+    for await (const sentence of sentences((async function* () { yield text; })())) {
+      if (!(await this.#say(turn, sentence))) break;
+      spoken.push(sentence);
+    }
+    return spoken;
   }
 
   /**
@@ -159,11 +178,7 @@ export class Assistant {
     const turn = this.#begin();
     if (!this.#awake) this.#setAwake(true);
     await this.#run(turn, async () => {
-      const spoken: string[] = [];
-      for await (const sentence of sentences((async function* () { yield text; })())) {
-        if (!(await this.#say(turn, sentence))) break;
-        spoken.push(sentence);
-      }
+      const spoken = await this.#sayAll(turn, text);
       if (!spoken.length) return;
       const context: Message = { role: 'user', content: `(Nothing was said; you spoke up on your own.${note ? ` ${note}` : ''})` };
       const said: Message = { role: 'assistant', content: spoken.join(' ') };
@@ -194,6 +209,15 @@ export class Assistant {
       turn.transcriptMs = performance.now() - turn.startedAt;
       if (turn.abort.signal.aborted) return;
       if (voice && voice.result !== 'open') emit({ type: 'voice', ...voice });
+      if (this.#mode === 'meeting' && text) {
+        // Everyone in the room is written down; only the owner, by name, can end it.
+        const wake = parseWake(text);
+        if (!wake.name || voice?.result === 'stranger' || !isEndMeeting(wake.rest)) return void this.#deps.notes?.add(text);
+        this.#mode = undefined;
+        if (!this.#awake) this.#setAwake(true);
+        await this.#say(turn, 'One moment, sir, while I write up the notes.');
+        return void (await this.#sayAll(turn, (await this.#deps.notes?.end()) ?? ''));
+      }
       if (!text || voice?.result === 'stranger') return this.#armHold(); // noise, or not the owner's voice
 
       // Enrolment clips are voice samples, not questions.
@@ -202,6 +226,21 @@ export class Assistant {
       if (voice?.result === 'enrolled') return void (await this.#say(turn, 'Thank you, sir. From now on we answer only to your voice.'));
 
       const wake = parseWake(text);
+      if (this.#mode === 'dictation') {
+        // Typed as heard, names and all ("Friday is the deadline"); only "stop dictation" is a command.
+        emit({ type: 'heard', turn: turn.id, text });
+        if (isStopDictation(wake.rest || text)) {
+          this.#mode = undefined;
+          return void (await this.#say(turn, 'Dictation off, sir.'));
+        }
+        try {
+          return await this.#deps.typeText?.(`${text} `);
+        } catch (error) {
+          this.#mode = undefined;
+          emit({ type: 'error', turn: turn.id, message: error instanceof Error ? error.message : String(error) });
+          return void (await this.#say(turn, 'I could not type that, sir, so I have stopped the dictation.'));
+        }
+      }
       if (!this.#awake && !wake.name) return this.#armHold(); // asleep and not addressed
       emit({ type: 'heard', turn: turn.id, text });
 
@@ -220,6 +259,17 @@ export class Assistant {
         this.#carry = '';
         this.#setAwake(false);
         return void (await this.#say(turn, 'Going quiet, sir.'));
+      }
+      if (this.#deps.typeText && isStartDictation(text)) {
+        this.#carry = '';
+        this.#mode = 'dictation';
+        return void (await this.#say(turn, 'Dictation on, sir. Say stop dictation when you are done.'));
+      }
+      if (this.#deps.notes && isStartMeeting(text)) {
+        this.#carry = '';
+        this.#mode = 'meeting';
+        this.#deps.notes.start();
+        return void (await this.#say(turn, 'Taking notes, sir. Say, Jarvis, end the meeting, when it is over.'));
       }
       if (voiceLock && isForgetVoiceCommand(text)) {
         voiceLock.forget();
@@ -322,8 +372,8 @@ export class Assistant {
       const args: unknown = JSON.parse(call.arguments || '{}');
       if (typeof args !== 'object' || args === null || Array.isArray(args)) throw new Error('the arguments must be a JSON object');
       const action = tool.approval?.(args as Args);
-      if (action && (!this.#deps.autonomous || DELETION.test(`${action} ${call.arguments}`))) {
-        // The spoken question is short; the panel shows exactly what would run.
+      if (action && (!this.#deps.autonomous || tool.alwaysAsk || DELETION.test(`${action} ${call.arguments}`))) {
+        // The spoken question is short; the activity log shows exactly what would run.
         report('asking', `Asking permission to ${action} (${call.arguments.slice(0, 600)})`);
         if (!(await this.#approve(turn, action))) {
           report('declined', `Not done: ${action}`);

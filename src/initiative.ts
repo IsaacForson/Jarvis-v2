@@ -24,6 +24,8 @@ export type InitiativeDeps = {
   now?: () => Date;
   /** "HH:MM"; default 08:00. */
   briefingAt?: string;
+  /** When the evening recap is given, "HH:MM"; default 21:00. */
+  recapAt?: string;
 };
 
 const MINUTE = 60_000;
@@ -42,12 +44,15 @@ const ALARM_REPEATS = 15;
 const BRIEFING = (reminders: string) =>
   `Give him his morning briefing now: greet him, then today's calendar, his unread email (say which look important, and mention any that have waited more than a day for him), the weather, and his reminders for today. Use your tools for the calendar, the email and the weather. His reminders and alarms for today: ${reminders}. Keep it to a few spoken sentences.`;
 
+const RECAP = (open: string) =>
+  `Give him his evening recap now, in a few spoken sentences: what got done today (use recall with today's date), what is still open (his reminders: ${open}), and what comes first tomorrow (use calendar_events for tomorrow). Then wish him a good evening.`;
+
 const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
 const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
-/** "HH:MM" as hours and minutes; anything else is 08:00. */
-export const briefingTime = (value?: string): [number, number] => {
+/** "HH:MM" as hours and minutes; anything else is the fallback, 08:00 unless given. */
+export const briefingTime = (value?: string, fallback: [number, number] = [8, 0]): [number, number] => {
   const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(value?.trim() ?? '');
-  return match ? [Number(match[1]), Number(match[2])] : [8, 0];
+  return match ? [Number(match[1]), Number(match[2])] : fallback;
 };
 export const isQuiet = (now: Date) => now.getHours() >= QUIET_FROM || now.getHours() < QUIET_TO;
 const sender = (from: string) => from.replace(/\s*<.*>\s*$/, '').replace(/^"|"$/g, '') || from;
@@ -130,7 +135,7 @@ export class Initiative {
       const logged = (step: Promise<void>) => step.catch((error: unknown) => console.error('[jarvis] initiative:', error instanceof Error ? error.message : error));
       await logged(this.#mail(now)); // first, so a followed-up email that has since been read is not chased
       this.#reminders(now);
-      await Promise.all([this.#brief(now), this.#deploys(now), this.#calendar(now), this.#wellbeing(now)].map(logged));
+      await Promise.all([this.#brief(now), this.#recap(now), this.#deploys(now), this.#calendar(now), this.#wellbeing(now)].map(logged));
       await this.#deliver();
     } finally {
       this.#ticking = false;
@@ -173,6 +178,16 @@ export class Initiative {
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
     const today = (this.#db.prepare('SELECT * FROM reminders WHERE due < ? ORDER BY due').all(end) as Reminder[]).map((one) => `${clock.format(one.due)} ${one.alarm ? 'alarm: ' : ''}${one.text}`);
     if (await this.#deps.initiate(BRIEFING(today.join('; ') || 'none'))) this.#set('briefed', localDay(now));
+  }
+
+  /** The evening's mirror of the briefing, given once, and only while he is at the Mac to hear it. */
+  async #recap(now: Date): Promise<void> {
+    const [hours, minutes] = briefingTime(this.#deps.recapAt, [21, 0]);
+    const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes);
+    if (isQuiet(now) || now < at || this.#get('recapped') === localDay(now)) return;
+    if (this.#deps.idleSeconds && (await this.#deps.idleSeconds()) >= AWAY) return; // away: try again when he is back
+    const open = (this.#db.prepare('SELECT * FROM reminders ORDER BY due').all() as Reminder[]).map((one) => `${when.format(one.due)} ${one.alarm ? 'alarm: ' : ''}${one.text}`);
+    if (await this.#deps.initiate(RECAP(open.join('; ') || 'none'))) this.#set('recapped', localDay(now));
   }
 
   async #mail(now: Date): Promise<void> {

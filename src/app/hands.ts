@@ -1,5 +1,5 @@
 // Hand control: the webcam watches for a hand, MediaPipe finds its landmarks, and Gestures turns
-// them into grab, drag, release and swipe. The camera is on only while hand control is on.
+// them into grab, drag and release. The camera is on only while hand control is on.
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import { type Gesture, Gestures } from './gestures.ts';
 
@@ -28,7 +28,7 @@ export function handControl(onGesture: (gesture: Gesture) => void, onStatus: (st
     if (video.readyState >= 2) {
       const now = performance.now();
       const hand = landmarker.detectForVideo(video, now).landmarks[0];
-      for (const gesture of gestures.update(hand, now)) {
+      for (const gesture of gestures.update(hand)) {
         if (gesture.type === 'grab') holding = true;
         if (gesture.type === 'release') holding = false;
         onGesture(gesture);

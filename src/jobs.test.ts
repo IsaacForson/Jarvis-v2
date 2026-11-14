@@ -57,3 +57,11 @@ test('each action is reported as it is done, and a restarted job is told what wa
   assert.deepEqual(steps, ['web_search {"query":"jobs"}: Three results.'], 'a refused action is not a step');
   assert.match(String(requests[0]!.messages[1]!.content), /^Apply to jobs\n\nThis task was started earlier[\s\S]*- web_click \{"ref":4\}: Applied to Acme\nDo not repeat them/);
 });
+
+test('a background job never sends a message, since nobody can be asked', async () => {
+  ran.length = 0;
+  const send: Tool = { name: 'send_email', description: '', parameters: { type: 'object', properties: {} }, alwaysAsk: true, approval: () => 'send an email', run: async () => (ran.push('emailed'), 'Sent.') };
+  const { chat } = model([[call('send_email', {}, 'a')]], 'I left the email for you.');
+  await runJob('Email the report', { chat, model: { model: 'deep' }, tools: () => [send], autonomous: true });
+  assert.deepEqual(ran, []);
+});

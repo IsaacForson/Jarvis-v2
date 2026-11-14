@@ -23,6 +23,8 @@ const setup = (
     /** Tool calls the model makes, round by round; a round with none ends the reply. */
     calls?: ToolCall[][];
     onSpeak?: (text: string) => void | Promise<void>;
+    /** Dictation and meeting notes: what was typed and noted is recorded in `typed` and `noted`. */
+    modes?: boolean;
     /** A quick brain: its answers and tool calls in order (a missing answer means it is unreachable), and the tools it has. */
     quick?: { replies: (string[] | undefined)[]; calls?: ToolCall[][]; tools?: Tool[] };
   } = {},
@@ -30,6 +32,8 @@ const setup = (
   const events: AssistantEvent[] = [];
   const requests: ChatRequest[] = [];
   const quickRequests: ChatRequest[] = [];
+  const typed: string[] = [];
+  const noted: string[] = [];
   const quickRounds = [...(overrides.quick?.calls ?? [])];
   const checks_: string[] = [];
   const heard = [...(overrides.heard ?? [])];
@@ -88,12 +92,14 @@ const setup = (
     autonomous: overrides.autonomous,
     context: overrides.context,
     idleSleepMs: overrides.idleSleepMs,
+    typeText: overrides.modes ? async (text) => void typed.push(text) : undefined,
+    notes: overrides.modes ? { start: () => void (noted.length = 0), add: (text) => void noted.push(text), end: async () => `You agreed ${noted.length} things. The notes are saved.` } : undefined,
   });
   const summary = () =>
     events
       .filter((e) => e.type !== 'timing')
       .map((e) => (e.type === 'heard' || e.type === 'speech' ? `${e.type}:${e.text}` : e.type === 'error' ? `error:${e.message}` : e.type === 'awake' ? `awake:${e.awake}` : e.type === 'voice' ? `voice:${e.result}` : e.type === 'tool' ? `tool:${e.status}` : e.type));
-  return { assistant, events, requests, quickRequests, summary, voices, lockCalls, toolChecks: checks_ };
+  return { assistant, events, requests, quickRequests, typed, noted, summary, voices, lockCalls, toolChecks: checks_ };
 };
 
 test('a turn is heard, answered sentence by sentence, then done', async () => {
@@ -630,4 +636,43 @@ test('the quick brain is sent only the words of earlier exchanges, never their t
     { role: 'assistant', content: 'Safari is open.' },
     { role: 'user', content: 'Thank you.' },
   ]);
+});
+
+test('in dictation, what he says is typed as heard and not answered, until he says stop', async () => {
+  const { assistant, summary, requests, typed } = setup([], {
+    heard: ['Start dictation.', 'Friday is the deadline.', 'Jarvis will send it, okay?', 'Jarvis, stop dictation.', 'What time is it?'],
+    modes: true,
+  });
+  for (let i = 0; i < 4; i++) await assistant.hear(audio);
+  assert.deepEqual(typed, ['Friday is the deadline. ', 'Jarvis will send it, okay? '], 'names are typed, not obeyed');
+  assert.equal(requests.length, 0, 'the model is never asked');
+  assert.deepEqual(summary(), [
+    'heard:Start dictation.', 'speech:Dictation on, sir. Say stop dictation when you are done.', 'done',
+    'heard:Friday is the deadline.', 'done', 'heard:Jarvis will send it, okay?', 'done',
+    'heard:Jarvis, stop dictation.', 'speech:Dictation off, sir.', 'done',
+  ]);
+});
+
+test('in a meeting everyone is written down, nothing is answered, and only the owner by name ends it', async () => {
+  const { assistant, summary, requests, noted } = setup([], {
+    heard: ['Take notes of this meeting.', 'Let us ship on Monday.', 'End the meeting.', 'Jarvis, end the meeting.', 'I agree, Monday.', 'Jarvis, end the meeting.'],
+    voice: [{ result: 'owner', score: 0.9 }, { result: 'stranger', score: 0.2 }, { result: 'owner', score: 0.9 }, { result: 'stranger', score: 0.2 }, { result: 'stranger', score: 0.3 }, { result: 'owner', score: 0.9 }],
+    modes: true,
+  });
+  for (let i = 0; i < 5; i++) await assistant.hear(audio);
+  assert.equal(assistant.busy, true, 'reminders wait until the meeting is over');
+  await assistant.hear(audio);
+  assert.deepEqual(noted, ['Let us ship on Monday.', 'End the meeting.', 'Jarvis, end the meeting.', 'I agree, Monday.'], 'a stranger cannot end it, nor can the owner without the name');
+  assert.equal(requests.length, 0);
+  assert.deepEqual(summary().filter((line) => !line.startsWith('voice:')).slice(-4), ['speech:One moment, sir, while I write up the notes.', 'speech:You agreed 4 things.', 'speech:The notes are saved.', 'done']);
+  assert.equal(assistant.busy, false);
+});
+
+test('sending a message is asked about even when Jarvis works on its own', async () => {
+  ran.length = 0;
+  const send: Tool = { name: 'send_message', description: '', parameters: { type: 'object', properties: {} }, alwaysAsk: true, approval: () => 'send a message to Dana, saying: Running late', run: async () => (ran.push('sent'), 'Sent.') };
+  const { assistant, summary } = setup([[], ['Left unsent.']], { heard: ['Tell Dana I am running late.'], tools: [send], autonomous: true, approvalMs: 20, calls: [[call('send_message', {})]] });
+  await assistant.hear(audio);
+  assert.deepEqual(ran, []);
+  assert.deepEqual(summary().slice(2, 5), ['tool:asking', 'speech:Shall I send a message to Dana, saying: Running late, sir?', 'tool:declined']);
 });

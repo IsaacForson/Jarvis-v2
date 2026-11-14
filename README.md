@@ -15,14 +15,26 @@ Recording and Camera, to be allowed once. After code changes run `npm run build`
 only after upgrading Electron or moving this folder, since macOS then asks for the permissions again.
 `npm run keys-to-keychain` moves the NVIDIA and Groq keys out of `.env` into the macOS Keychain; Jarvis reads them from either.
 
+Everyday extras: "pause", "next song" and "what is playing" press the Mac's media keys; "run my Lights off shortcut"
+runs anything you have built in the Shortcuts app; "explain this" or "translate this" reads the text you have selected,
+and "what I copied" reads the clipboard. "Email Dana that I am running late" or "WhatsApp Dana ..." looks the person up
+in Contacts and sends through Mail, Messages or WhatsApp; every message is read back and sent only on a spoken yes,
+even with `JARVIS_AUTONOMOUS=1`, and background jobs never send.
+
+Dictation: "Jarvis, start dictation" types what you say into the app in front until you say "stop dictation".
+Meeting notes: "Jarvis, take notes of this meeting" writes down everything the microphone hears, from anyone, without
+answering; "Jarvis, end the meeting" saves a summary, decisions, action items and the full transcript in
+`~/Documents/Meeting notes` and tells you the gist. It hears the room, so people on a call must be on the speakers.
+An evening recap is given at `JARVIS_RECAP_TIME` (default 21:00) if you are at the Mac: what got done, what is open,
+what is first tomorrow.
+
 Two brains: with Groq keys (`GROQ_API_KEYS`, optional), conversation and simple actions (opening apps, volume, weather,
-calendar, email, reminders, memory, screenshots) are answered by Groq, which starts replying in about half a second.
+calendar, email, reminders, memory, screenshots, music keys, shortcuts, the clipboard) are answered by Groq, which starts replying in about half a second.
 Everything else (the web, files, the screen, other apps, long jobs) is handed to the NVIDIA models, which also take over
 whenever Groq is unreachable or its keys have used their minute's allowance (8,000 tokens a minute each).
 
 - Ctrl+Option+J turns the microphone off and on.
 - Ctrl+Option+S stops Jarvis talking.
-- Ctrl+Option+P, or the Panels button under the orb, shows and hides the transcript and the activity log.
 - Right-click the orb to quit. Drag it to move it.
 
 What Jarvis can do on the Mac (phase 3): open apps and web addresses, set the volume, run AppleScript, find, read and
@@ -40,7 +52,7 @@ or change something, Return in messaging apps, Command-Delete and quitting are a
 never typed into. This needs Accessibility switched on, in System Settings under Privacy and Security, for the app that
 launches Jarvis (Cursor or Terminal). The small Swift helper behind it is compiled by `npm run build` and needs the Xcode
 command-line tools. Anything that changes or deletes something is asked about first ("Shall I ..., sir?") and
-runs only on a spoken yes; the activity panel shows exactly what was asked and done. `JARVIS_AUTONOMOUS=1` in `.env` turns
+runs only on a spoken yes; `activity.log` in the data folder records exactly what was asked and done. `JARVIS_AUTONOMOUS=1` in `.env` turns
 these questions off so Jarvis clicks, fills in and sends on its own; deleting is still asked about, and payments, passwords
 and card numbers are still refused. Secrets (`.env`, keys, keychains)
 and anything outside the home folder are off limits, and `sudo` is refused.
@@ -90,8 +102,7 @@ needed: paying, signing in, passwords, captchas and deleting.
 
 Hand control (phase 7): "Jarvis, turn on hand control", Ctrl+Option+H, or "Hand control" in the menu-bar menu switches
 the webcam on; it is off by default and the camera is used only while it is on. Pinch thumb and index finger to grab
-the hologram (the orb glows brighter), move your hand to move it with its panels, and open your hand to let go. Sweep an
-open hand left to open the panels and right to close them. macOS asks once to allow the camera. The hand model
+the hologram (the orb glows brighter), move your hand to move it, and open your hand to let go. macOS asks once to allow the camera. The hand model
 (`models/hand_landmarker.task`) is downloaded by `npm run build`.
 
 Documents: Jarvis reads Word, RTF, OpenDocument, PDF and text files, edits them in place ("change the price to 650 in

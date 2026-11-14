@@ -8,7 +8,7 @@
       :root { --glow: 90, 215, 255; --text: #d9f4ff; --dim: #8fb6c7; --alert: #ff8a80; }
       body.friday { --glow: 255, 130, 190; --text: #ffe6f1; --dim: #c9a0b3; }
       html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-      /* The whole window drags, since it has no title bar; panels and buttons opt out so they can be used. */
+      /* The whole window drags, since it has no title bar. */
       body { -webkit-app-region: drag; user-select: none; display: flex; justify-content: flex-end; align-items: flex-end; gap: 12px;
              font: 12px/1.45 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text); }
       #orb-box { width: 240px; display: flex; flex-direction: column; align-items: center; flex: none; }
@@ -16,37 +16,12 @@
       /* Held by a pinch: the orb glows brighter, so the user can see it has been grabbed. */
       body.holding canvas { filter: drop-shadow(0 0 18px rgba(var(--glow), 0.95)) brightness(1.3); }
       #caption { text-shadow: 0 0 6px #000, 0 0 2px #000; text-align: center; padding: 0 8px; height: 34px; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; }
-      button { -webkit-app-region: no-drag; font: inherit; color: var(--dim); background: rgba(6, 18, 26, 0.55); border: 1px solid rgba(var(--glow), 0.35);
-               border-radius: 4px; padding: 2px 10px; margin-bottom: 4px; cursor: pointer; letter-spacing: 0.08em; text-transform: uppercase; font-size: 10px; }
-      button:hover, button:focus-visible { color: var(--text); border-color: rgba(var(--glow), 0.9); outline: none; box-shadow: 0 0 8px rgba(var(--glow), 0.5); }
-      #panels { -webkit-app-region: no-drag; flex: 1; min-width: 0; height: 100%; box-sizing: border-box; padding: 8px 0 8px 8px; display: flex; flex-direction: column; gap: 8px; }
-      #panels[hidden] { display: none; }
-      .panel { position: relative; min-height: 0; display: flex; flex-direction: column; border: 1px solid rgba(var(--glow), 0.45); border-radius: 6px;
-               background: rgba(4, 14, 22, 0.72); box-shadow: 0 0 14px rgba(var(--glow), 0.18), inset 0 0 24px rgba(var(--glow), 0.06); overflow: hidden; }
-      /* Scan lines, the hologram look. Decorative, so it must not swallow clicks. */
-      .panel::after { content: ""; position: absolute; inset: 0; pointer-events: none;
-                      background: repeating-linear-gradient(to bottom, rgba(var(--glow), 0.05) 0 1px, transparent 1px 3px); }
-      #transcript { flex: 3; } #activity { flex: 2; }
-      h2 { margin: 0; padding: 5px 10px; font-size: 10px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
-           color: rgb(var(--glow)); border-bottom: 1px solid rgba(var(--glow), 0.3); text-shadow: 0 0 8px rgba(var(--glow), 0.8); }
-      ol { list-style: none; margin: 0; padding: 6px 10px; overflow-y: auto; flex: 1; user-select: text; }
-      li { margin: 0 0 5px; overflow-wrap: anywhere; }
-      li .tag { color: rgb(var(--glow)); margin-right: 6px; }
-      li.you .tag { color: var(--dim); }
-      li.alert { color: var(--alert); }
-      .empty { color: var(--dim); font-style: italic; }
-      ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: rgba(var(--glow), 0.35); border-radius: 3px; }
     </style>
   </head>
   <body>
-    <section id="panels" hidden aria-label="Jarvis panels">
-      <div class="panel" id="transcript"><h2>Transcript</h2><ol aria-live="polite"><li class="empty">Nothing said yet.</li></ol></div>
-      <div class="panel" id="activity"><h2>Activity</h2><ol><li class="empty">Nothing has happened yet.</li></ol></div>
-    </section>
     <section id="orb-box">
       <canvas id="orb" role="img" aria-label="Jarvis"></canvas>
       <div id="caption" role="status" aria-live="polite">Starting…</div>
-      <button id="toggle" type="button" aria-expanded="false" aria-controls="panels" title="Show or hide the panels (Ctrl+Option+P)">Panels</button>
     </section>
     <script src="renderer.js"></script>
   </body>

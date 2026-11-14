@@ -39,6 +39,13 @@ export const isLearnVoiceCommand = (text: string) => short(text) && LEARN_VOICE.
 /** "Forget my voice": answer to anyone again. */
 export const isForgetVoiceCommand = (text: string) => short(text) && FORGET_VOICE.test(text);
 
+/** "Start dictation", "type what I say": what he says next is typed, not answered. */
+export const isStartDictation = (text: string) => short(text) && /^\W*(?:please\s+)?(?:(?:start|begin|take)\s+(?:a\s+)?dictation\b|dictation(?:\s+(?:mode|on))?\W*$|type\s+(?:this|what i say|for me|as i (?:speak|talk))\b)/i.test(text);
+export const isStopDictation = (text: string) => short(text) && /\b(?:(?:stop|end|finish)\s+(?:the\s+)?(?:dictation|typing)|dictation\s+off)\b/i.test(text);
+/** "Take notes of this meeting": what is said next, by anyone, is written down, not answered. */
+export const isStartMeeting = (text: string) => short(text) && /\b(?:take|start taking|make|keep)\s+(?:the\s+)?(?:meeting\s+)?(?:notes|minutes)\b|\b(?:start|begin)\s+(?:the|a|my)\s+meeting\b/i.test(text);
+export const isEndMeeting = (text: string) => short(text) && /\b(?:end|stop|finish|close)\s+(?:the\s+|this\s+)?(?:meeting|call|notes|minutes|note[- ]taking)\b|\bstop taking (?:notes|minutes)\b|\bmeeting(?:'s| is) over\b/i.test(text);
+
 const NO = /\b(?:no|nope|don't|do not|cancel|stop|never ?mind|negative|leave it|not now)\b/i;
 const YES = /\b(?:yes|yeah|yep|yup|sure|go ahead|do it|please do|go on|confirm(?:ed)?|okay|ok|proceed|approved?|absolutely|of course)\b/i;
 

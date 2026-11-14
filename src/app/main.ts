@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { appendFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, screen, systemPreferences, Tray, utilityProcess } from 'electron';
 import { keychainKeys } from '../key-pool.ts';
@@ -49,15 +49,13 @@ app.whenReady().then(async () => {
   if (!only) return;
   if (process.platform === 'darwin') await systemPreferences.askForMediaAccess('microphone');
 
-  // Orb only, or orb with the panels to its left. The window is see-through but still catches clicks,
-  // so it is kept as small as what it shows.
-  const COMPACT = { width: 240, height: 310 };
-  const EXPANDED = { width: 700, height: 470 };
+  // The window is see-through but still catches clicks, so it is kept as small as the orb and its caption.
+  const SIZE = { width: 240, height: 280 };
   const area = screen.getPrimaryDisplay().workArea;
   const window = new BrowserWindow({
-    ...COMPACT,
-    x: area.x + area.width - COMPACT.width - 24,
-    y: area.y + area.height - COMPACT.height - 24,
+    ...SIZE,
+    x: area.x + area.width - SIZE.width - 24,
+    y: area.y + area.height - SIZE.height - 24,
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -92,17 +90,7 @@ app.whenReady().then(async () => {
   window.webContents.on('console-message', (event) => {
     if (event.level === 'error' || event.level === 'warning') console.log(`[window ${event.level}] ${event.message}`);
   });
-  let panelsOpen = false;
-  const togglePanels = () => {
-    panelsOpen = !panelsOpen;
-    // Grow and shrink from the bottom-right corner, so the orb stays where it is.
-    const { x, y, width, height } = window.getBounds();
-    const size = panelsOpen ? EXPANDED : COMPACT;
-    window.setBounds({ ...size, x: x + width - size.width, y: y + height - size.height });
-    toRenderer({ type: 'panels', open: panelsOpen });
-  };
-
-  // --- Hand control: a pinch grabs the hologram, moving the hand moves it, a sideways swipe opens or closes the panels. ---
+  // --- Hand control: a pinch grabs the hologram, moving the hand moves it. ---
   let handsOn = false;
   const setHands = async (on: boolean) => {
     if (on && process.platform === 'darwin' && !fakeCamera && !(await systemPreferences.askForMediaAccess('camera'))) {
@@ -123,17 +111,12 @@ app.whenReady().then(async () => {
     } else if (move.type === 'release' && held) {
       console.log(`[jarvis] gesture: moved the window to ${window.getPosition().join(', ')}`);
       held = undefined;
-    } else if (move.type === 'swipe') {
-      // The panels open to the left of the orb: sweep left to pull them out, right to push them away.
-      if ((move.direction === 'left') !== panelsOpen) togglePanels();
-      console.log(`[jarvis] gesture: swipe ${move.direction}, panels ${panelsOpen ? 'open' : 'closed'}`);
     }
     if (move.type === 'grab') console.log('[jarvis] gesture: grab');
   };
 
   window.webContents.on('context-menu', () =>
     Menu.buildFromTemplate([
-      { label: panelsOpen ? 'Hide panels' : 'Show panels', click: togglePanels },
       { label: 'Hide the orb (Jarvis keeps listening; show it from the menu bar)', click: toggleOrb },
       { label: 'Forget my voice (answer to anyone)', click: () => engine.postMessage({ type: 'forget-voice' } satisfies ToEngine) },
       { role: 'quit', label: 'Quit Jarvis' },
@@ -148,12 +131,19 @@ app.whenReady().then(async () => {
     if (!window.isDestroyed()) window.webContents.send('jarvis', message);
   };
 
+  // What Jarvis did and what went wrong, kept on disk: opened from Finder there is no terminal to show it.
+  const activityLog = join(app.getPath('userData'), 'activity.log');
+  // shortcut: started afresh once it passes 2 MB (months of use); rotate properly if the history ever matters.
+  if ((await stat(activityLog).catch(() => ({ size: 0 }))).size > 2_000_000) await writeFile(activityLog, '');
+  const keep = (line: string) => void appendFile(activityLog, `${new Date().toISOString()} ${line}\n`, { mode: 0o600 }).catch(() => {});
+
   let helperPid: number | undefined;
   let turnsLeft = Number(process.env.JARVIS_SELFTEST_TURNS ?? 1);
   engine.on('message', (message: ToRenderer) => {
     if (message.type === 'helper') return void (helperPid = message.pid);
     if (message.type === 'hand-control') return void setHands(message.on); // asked for by voice
     console.log(`[jarvis] ${describe(message)}`);
+    if (message.type === 'tool' || message.type === 'error' || message.type === 'fatal') keep(describe(message));
     toRenderer(message);
     // The self-test speaks to itself, so the real microphone is switched off: room noise must not interrupt it.
     if (selftest && message.type === 'ready') toRenderer({ type: 'toggle-mic' });
@@ -161,15 +151,11 @@ app.whenReady().then(async () => {
     // JARVIS_SELFTEST_SECONDS: quit this long after starting, for tests where Jarvis says nothing.
     if (selftest && message.type === 'ready' && process.env.JARVIS_SELFTEST_SECONDS) setTimeout(() => app.quit(), Number(process.env.JARVIS_SELFTEST_SECONDS) * 1000);
     if (selftest && message.type === 'ready') engine.postMessage({ type: 'selftest', question: process.env.JARVIS_SELFTEST_ASK, answer: process.env.JARVIS_SELFTEST_ANSWER, answerTo: process.env.JARVIS_SELFTEST_ANSWER_TO } satisfies ToEngine);
-    // Self-test captures: the orb mid-sentence, then the open panels. A dark backdrop stands in for the desktop.
+    // Self-test capture: the orb mid-sentence. A dark backdrop stands in for the desktop.
     const shot = selftest ? process.env.JARVIS_SELFTEST_SHOT : undefined;
     const capture = async (name: string) => writeFile(`${shot}-${name}.png`, (await window.webContents.capturePage()).toPNG());
     if (shot && message.type === 'ready') void window.webContents.insertCSS('html { background: #0b1218 !important; }');
     if (shot && message.type === 'speech') setTimeout(() => void capture('speaking'), 400);
-    if (shot && message.type === 'done') {
-      setTimeout(togglePanels, 2500);
-      setTimeout(() => void capture('panels'), 4000);
-    }
     // JARVIS_SELFTEST_TURNS: how many turns to wait for, to test something Jarvis says later on its own.
     if (selftest && message.type === 'done') turnsLeft--;
     if (selftest && ((message.type === 'done' && turnsLeft <= 0) || message.type === 'fatal')) setTimeout(() => app.quit(), 6000);
@@ -181,8 +167,7 @@ app.whenReady().then(async () => {
 
   // The window may only send the messages it has a reason to send, rebuilt here field by field.
   ipcMain.on('jarvis', (_event, message: ToEngine | ToMain) => {
-    if (message?.type === 'toggle-panels') togglePanels();
-    else if (message?.type === 'gesture' && message.gesture && typeof message.gesture === 'object') gesture(message.gesture);
+    if (message?.type === 'gesture' && message.gesture && typeof message.gesture === 'object') gesture(message.gesture);
     else if (message?.type === 'hand-status') {
       if (message.status === 'off' || message.status === 'error') handsOn = false;
       if (['starting', 'watching', 'off', 'error'].includes(message.status)) console.log(`[jarvis] hand control: ${message.status}${message.detail ? ` (${message.detail})` : ''}`);
@@ -198,7 +183,6 @@ app.whenReady().then(async () => {
   });
 
   globalShortcut.register('Control+Alt+J', () => toRenderer({ type: 'toggle-mic' }));
-  globalShortcut.register('Control+Alt+P', togglePanels);
   globalShortcut.register('Control+Alt+H', () => void setHands(!handsOn));
   globalShortcut.register('Control+Alt+S', () => {
     engine.postMessage({ type: 'interrupt' } satisfies ToEngine);

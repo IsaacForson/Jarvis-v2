@@ -25,15 +25,12 @@ export type ToRenderer =
   | { type: 'ready' }
   | { type: 'fatal'; message: string }
   | { type: 'toggle-mic' }
-  /** The panels were opened or closed (the main process has already resized the window). */
-  | { type: 'panels'; open: boolean }
   /** Hand control (the webcam) switched on or off, by voice, the menu or the shortcut. */
   | { type: 'hand-control'; on: boolean }
   | { type: 'stop' };
 
 /** Renderer to main process only. */
 export type ToMain =
-  | { type: 'toggle-panels' }
   /** The orb's average frame rate while one reply was spoken. */
   | { type: 'frame-rate'; framesPerSecond: number }
   /** A hand gesture seen by the webcam. */

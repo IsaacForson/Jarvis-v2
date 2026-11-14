@@ -1,7 +1,7 @@
 // Jarvis's hands inside other apps, through the macOS accessibility interface.
 // Usage: ax tree | press PATH ROLE | type TEXT [PATH ROLE] | key COMBO | menus [TITLE] | menu TITLE...
 //        | click X Y [right|double] | drag X1 Y1 X2 Y2 | scroll X Y DOWN RIGHT | at X Y | screen
-//        | pdftext FILE | frontwindow
+//        | pdftext FILE | frontwindow | media play|next|previous
 // Every command before click takes an optional --app NAME.
 // Prints JSON on success; prints a plain sentence to stderr and exits 1 on failure.
 import ApplicationServices
@@ -217,6 +217,16 @@ func key(_ combo: String) {
 }
 
 /// Types text as if at the keyboard, whatever the keyboard layout.
+/// Presses a media key, as the keyboard's play, next and previous keys do: whatever app is playing obeys.
+func media(_ name: String) {
+  guard let code = ["play": 16, "next": 17, "previous": 18][name] else { fail("The media keys are play, next and previous.") }
+  for state in [0xa, 0xb] { // down, then up
+    NSEvent.otherEvent(with: .systemDefined, location: .zero, modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(state << 8)), timestamp: 0, windowNumber: 0, context: nil,
+                       subtype: 8, data1: (code << 16) | (state << 8), data2: -1)?.cgEvent?.post(tap: .cghidEventTap)
+    Thread.sleep(forTimeInterval: 0.03)
+  }
+}
+
 func type(_ text: String) {
   for chunk in stride(from: 0, to: text.utf16.count, by: 16).map({ Array(text.utf16.dropFirst($0).prefix(16)) }) {
     for down in [true, false] {
@@ -319,6 +329,9 @@ case "key" where arguments.count == 2:
   requireFront(target(appName))
   key(arguments[1])
   Thread.sleep(forTimeInterval: 0.1)
+  print("{}")
+case "media" where arguments.count == 2:
+  media(arguments[1])
   print("{}")
 case "menus" where arguments.count <= 2:
   menus(target(appName), arguments.count == 2 ? arguments[1] : nil)
