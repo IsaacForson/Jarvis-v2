@@ -7,6 +7,7 @@ import { format } from 'node:util';
 import { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, powerMonitor, screen, systemPreferences, Tray, utilityProcess } from 'electron';
 import { keychainKeys } from '../key-pool.ts';
 import { LOGIN_AGENT, setStartAtLogin } from './login.ts';
+import { needsSetup, runSetup } from './setup.ts';
 import { dragTo, type Gesture } from './gestures.ts';
 import type { ToEngine, ToMain, ToRenderer } from './messages.ts';
 
@@ -30,10 +31,14 @@ for (const level of ['log', 'error', 'warn'] as const) {
     toLog(`${format(...parts)}\n`);
   };
 }
-try {
-  process.loadEnvFile(join(root, '.env'));
-} catch {
-  // No .env: settings keep their defaults.
+// Settings: the project's .env while developing; for the installed app, settings.env in Jarvis's data
+// folder (~/Library/Application Support/Jarvis), the same lines as .env.example.
+for (const file of [join(root, '.env'), join(app.getPath('userData'), 'settings.env')]) {
+  try {
+    process.loadEnvFile(file);
+  } catch {
+    // Not there: settings keep their defaults.
+  }
 }
 // The keys are in .env, or in the Keychain once `npm run keys-to-keychain` has moved them. With neither, the engine says so in the window.
 process.env.NVIDIA_API_KEYS ||= keychainKeys();
@@ -66,7 +71,9 @@ const describe = (message: ToRenderer) =>
 
 app.whenReady().then(async () => {
   if (!only) return;
-  if (process.platform === 'darwin') await systemPreferences.askForMediaAccess('microphone');
+  // The first time (or when the keys or the microphone are missing), the setup window comes first.
+  if (!selftest && needsSetup()) await runSetup(dist, ({ startAtLogin }) => setStartAtLogin(startAtLogin, process.execPath, root));
+  else if (process.platform === 'darwin') await systemPreferences.askForMediaAccess('microphone');
 
   // The window is see-through but still catches clicks, so it is kept as small as the orb and its caption.
   const SIZE = { width: 240, height: 280 };
@@ -98,6 +105,7 @@ app.whenReady().then(async () => {
       { label: window.isVisible() ? 'Hide the orb' : 'Show the orb', click: toggleOrb },
       { label: 'Microphone on or off', accelerator: 'Control+Alt+J', click: () => toRenderer({ type: 'toggle-mic' }) },
       { label: 'Hand control (uses the camera)', type: 'checkbox', checked: handsOn, accelerator: 'Control+Alt+H', click: (item) => void setHands(item.checked) },
+      { label: 'Set up permissions…', click: () => void runSetup(dist, ({ startAtLogin }) => setStartAtLogin(startAtLogin, process.execPath, root)) },
       { label: 'Start at login', type: 'checkbox', checked: existsSync(LOGIN_AGENT), click: (item) => void setStartAtLogin(item.checked, process.execPath, root) },
       { type: 'separator' },
       { role: 'quit', label: 'Quit Jarvis' },

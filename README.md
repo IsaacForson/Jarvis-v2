@@ -11,8 +11,17 @@ Needs the keys in `.env`, `brew install whisper-cpp` and the speech model in `mo
 
 `npm run app` builds `~/Applications/Jarvis.app`, which runs this same folder under its own name: open it from
 Spotlight or Launchpad, and macOS lists "Jarvis" (not Cursor or Terminal) under Microphone, Accessibility, Screen
-Recording and Camera, to be allowed once. After code changes run `npm run build` and reopen it; rebuild the app itself
-only after upgrading Electron or moving this folder, since macOS then asks for the permissions again.
+Recording and Camera, to be allowed once. After code changes run `npm run build` and reopen it. Both apps are signed
+with a certificate made once on this Mac (in `~/Library/Application Support/Jarvis Signing`), so macOS keeps the
+permissions across rebuilds.
+
+`npm run installer` builds `dist/Jarvis-Installer.pkg` (about 1.5 GB): a normal installer (Continue, Continue, Install)
+for a standalone Jarvis.app with its code, libraries, speech models and whisper-server inside, so it needs neither this
+folder nor Homebrew (Apple-silicon Macs). When it finishes, Jarvis opens a setup window that takes you through the API
+keys, Microphone, Accessibility, Screen Recording, Calendar and Mail, and Camera, one button each; macOS lets no app
+switch these on by itself. The installed app reads its settings from `~/Library/Application Support/Jarvis/settings.env`
+(the same lines as `.env.example`). On another Mac, open the installer with right-click, Open, the first time, since
+it is not signed by Apple. "Set up permissions…" in the menu-bar menu brings the setup window back.
 `npm run keys-to-keychain` moves the NVIDIA and Groq keys out of `.env` into the macOS Keychain; Jarvis reads them from either.
 
 Everyday extras: "pause", "next song" and "what is playing" press the Mac's media keys; "run my Lights off shortcut"

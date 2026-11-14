@@ -17,7 +17,8 @@
     "allow-wake": "sh scripts/allow-wake.sh",
     "app": "npm run build && node scripts/make-app.mjs",
     "dmg": "npm run app && sh scripts/make-dmg.sh",
-    "keys-to-keychain": "sh scripts/keys-to-keychain.sh"
+    "keys-to-keychain": "sh scripts/keys-to-keychain.sh",
+    "installer": "npm run build && node scripts/make-installer.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

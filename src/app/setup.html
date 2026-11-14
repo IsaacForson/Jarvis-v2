@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'unsafe-inline'" />
+    <title>Set up Jarvis</title>
+    <style>
+      :root { --glow: 90, 215, 255; }
+      body { margin: 0; padding: 22px 30px; background: #07131b; color: #d9f4ff; font: 14px/1.5 -apple-system, system-ui, sans-serif; }
+      h1 { margin: 0 0 4px; font-size: 22px; color: rgb(var(--glow)); text-shadow: 0 0 10px rgba(var(--glow), 0.6); }
+      p.lead { margin: 0 0 18px; color: #8fb6c7; }
+      ol { list-style: none; margin: 0; padding: 0; }
+      li { display: flex; gap: 12px; align-items: flex-start; padding: 10px 14px; margin-bottom: 7px; border: 1px solid rgba(var(--glow), 0.25); border-radius: 8px; background: rgba(4, 14, 22, 0.7); }
+      li.done { border-color: rgba(120, 230, 160, 0.5); }
+      .tick { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1px solid rgba(var(--glow), 0.5); display: grid; place-items: center; font-size: 13px; margin-top: 2px; }
+      li.done .tick { background: rgba(120, 230, 160, 0.25); border-color: rgb(120, 230, 160); color: rgb(160, 245, 190); }
+      .what { flex: 1; }
+      .what b { display: block; }
+      .what span { color: #8fb6c7; font-size: 12.5px; }
+      .optional { font-size: 11px; color: #8fb6c7; margin-left: 6px; font-weight: normal; }
+      button { font: inherit; color: #07131b; background: rgb(var(--glow)); border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; white-space: nowrap; }
+      button:disabled { background: #2a3b45; color: #8fb6c7; cursor: default; }
+      li.done button, li.done input { display: none; }
+      input { width: 100%; box-sizing: border-box; margin-top: 6px; padding: 6px 8px; border-radius: 5px; border: 1px solid rgba(var(--glow), 0.35); background: #0b1d27; color: #d9f4ff; font: 12px ui-monospace, Menlo, monospace; }
+      footer { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
+      label { color: #8fb6c7; }
+      #finish { padding: 8px 22px; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Set up Jarvis</h1>
+    <p class="lead">Go down the list and press each button. macOS asks you to confirm each permission itself; no app can switch them on alone. Each step ticks itself once it is allowed.</p>
+    <ol>
+      <li id="keys"><div class="tick">1</div><div class="what"><b>API keys</b><span>Your NVIDIA keys (and Groq keys, optional), separated by commas. Kept in your Keychain.</span>
+        <input id="nvidia" placeholder="nvapi-…, nvapi-…" autocomplete="off" /><input id="groq" placeholder="gsk_… (optional)" autocomplete="off" /></div><button data-keys>Save</button></li>
+      <li id="microphone"><div class="tick">2</div><div class="what"><b>Microphone</b><span>To hear you. Press Allow in the box macOS shows.</span></div><button data-act="microphone">Allow</button></li>
+      <li id="accessibility"><div class="tick">3</div><div class="what"><b>Accessibility</b><span>To use apps for you: click, type, menus. In the settings that open, switch Jarvis on.</span></div><button data-act="accessibility">Open</button></li>
+      <li id="screen"><div class="tick">4</div><div class="what"><b>Screen Recording</b><span>To look at the screen, take screenshots and recordings. Switch Jarvis on; macOS may ask to reopen it.</span></div><button data-act="screen">Open</button></li>
+      <li id="automation"><div class="tick">5</div><div class="what"><b>Calendar, Mail and System Events</b><span>To read your calendar and mail. Press OK in each box macOS shows.</span></div><button data-act="automation">Ask</button></li>
+      <li id="camera"><div class="tick">6</div><div class="what"><b>Camera <span class="optional">optional</span></b><span>Only for hand control and "look at this". Off until you ask.</span></div><button data-act="camera">Allow</button></li>
+      <li id="chrome"><div class="tick">7</div><div class="what"><b>Google Chrome <span class="optional">optional</span></b><span>Jarvis browses the web in its own Chrome window.</span></div><button data-act="chrome">Download</button></li>
+    </ol>
+    <footer>
+      <label><input type="checkbox" id="login" checked style="width:auto;margin:0 6px 0 0" />Start Jarvis when I log in</label>
+      <button id="finish" disabled>Finish</button>
+    </footer>
+    <script src="setup-renderer.js"></script>
+  </body>
+</html>

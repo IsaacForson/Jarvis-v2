@@ -1,0 +1,12 @@
+#!/bin/sh
+# Opens Jarvis for the person who installed it, so its setup window comes straight up.
+# $2 is where the package was installed.
+app="$2/Jarvis.app"
+[ -d "$app" ] || app="/Applications/Jarvis.app"
+user="$(stat -f %Su /dev/console)"
+if [ "$(id -u)" = 0 ] && [ -n "$user" ] && [ "$user" != root ]; then
+  launchctl asuser "$(id -u "$user")" sudo -u "$user" open "$app" || true
+else
+  open "$app" || true
+fi
+exit 0

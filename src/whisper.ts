@@ -28,7 +28,7 @@ const freePort = () =>
  * `convert` makes it accept audio that is not 16 kHz WAV, at the cost of an ffmpeg run per clip.
  * `vocabulary` lists names it should spell correctly, such as "Jarvis".
  */
-export async function startWhisper(options: { model: string; convert?: boolean; vocabulary?: string; /** A Silero voice-detection model: clips with no speech come back empty at once. */ vad?: string }): Promise<Whisper> {
+export async function startWhisper(options: { model: string; convert?: boolean; vocabulary?: string; /** A Silero voice-detection model: clips with no speech come back empty at once. */ vad?: string; /** The server program; default whisper-server on the PATH. */ binary?: string }): Promise<Whisper> {
   if (!existsSync(options.model)) throw new Error(`Missing speech model ${options.model}; see the README for the download command`);
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
@@ -36,7 +36,7 @@ export async function startWhisper(options: { model: string; convert?: boolean; 
   // "Thank you.") after up to 5 s of retries, holding up what was said next. With it, noise returns nothing in
   // about 30 ms. No temperature fallback: retrying a hard clip costs seconds and rarely helps a short command.
   const args = ['-m', options.model, '--port', String(port), '-nf', ...(options.vad && existsSync(options.vad) ? ['--vad', '-vm', options.vad] : []), ...(options.convert ? ['--convert'] : [])];
-  const server = spawn('whisper-server', args, { stdio: 'ignore' });
+  const server = spawn(options.binary ?? 'whisper-server', args, { stdio: 'ignore' });
 
   // Rejects if the server dies, so no caller waits forever on a dead process.
   const died = new Promise<never>((_, reject) => {

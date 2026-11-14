@@ -27,6 +27,9 @@ await Promise.all([
   build({ ...node, entryPoints: ['src/app/main.ts', 'src/app/engine.ts'], outdir: 'dist', format: 'esm' }),
   // A sandboxed preload script must be CommonJS.
   build({ ...node, entryPoints: ['src/app/preload.ts'], outfile: 'dist/preload.cjs', format: 'cjs' }),
+  build({ ...node, entryPoints: ['src/app/setup-preload.ts'], outfile: 'dist/setup-preload.cjs', format: 'cjs' }),
+  build({ entryPoints: ['src/app/setup-renderer.ts'], outfile: 'dist/setup-renderer.js', bundle: true, platform: 'browser', format: 'iife' }),
+  copyFile('src/app/setup.html', 'dist/setup.html'),
   build({ entryPoints: ['src/app/renderer.ts'], outfile: 'dist/renderer.js', bundle: true, platform: 'browser', format: 'iife', sourcemap: true }),
   copyFile('src/app/index.html', 'dist/index.html'),
 ]);

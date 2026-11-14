@@ -65,7 +65,7 @@ try {
   const [tts, whisper, speakerProcessor, speakerModel, embedder] = await Promise.all([
     // fp32 measured 2.5x faster than the smaller q8 build on this Mac (M2 Pro).
     KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'fp32', device: 'cpu' }),
-    startWhisper({ model: speechModel(root), vocabulary: 'Jarvis, Friday, Forson.', vad: join(root, 'models/ggml-silero-v5.1.2.bin') }),
+    startWhisper({ model: speechModel(root), vocabulary: 'Jarvis, Friday, Forson.', vad: join(root, 'models/ggml-silero-v5.1.2.bin'), ...(existsSync(join(root, 'bin/whisper-server')) ? { binary: join(root, 'bin/whisper-server') } : {}) }),
     AutoProcessor.from_pretrained(SPEAKER_MODEL),
     // The 8-bit build told voices apart as well as the full one in testing, at a quarter of the size.
     AutoModelForXVector.from_pretrained(SPEAKER_MODEL, { dtype: 'q8', device: 'cpu' }),
