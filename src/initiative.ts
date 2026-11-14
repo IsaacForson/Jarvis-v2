@@ -15,6 +15,11 @@ export type InitiativeDeps = {
   initiate(instruction: string): Promise<boolean>;
   unreadMail?(): Promise<Mail[]>;
   isUrgent?(mail: Mail): Promise<boolean>;
+  /**
+   * Something in an email with a date he must act on or be ready for (a bill due, a delivery, a flight,
+   * an appointment): when to remind him and of what. Undefined for email with nothing of the kind.
+   */
+  dated?(mail: Mail): Promise<{ at: number; text: string } | undefined>;
   /** Failed builds and deployments in his code repositories. */
   failures?(): Promise<{ id: string; text: string; at: number }[]>;
   /** Events from now on, today. */
@@ -57,6 +62,14 @@ export const briefingTime = (value?: string, fallback: [number, number] = [8, 0]
 export const isQuiet = (now: Date) => now.getHours() >= QUIET_FROM || now.getHours() < QUIET_TO;
 const sender = (from: string) => from.replace(/\s*<.*>\s*$/, '').replace(/^"|"$/g, '') || from;
 const localDay = (now: Date) => `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+
+/** Reads the model's answer about a dated email: "NONE", or "YYYY-MM-DDTHH:MM | what to remind him of". */
+export function parseDated(reply: string): { at: number; text: string } | undefined {
+  const match = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})\s*\|\s*(.+)/.exec(reply);
+  const at = match ? new Date(match[1]!).getTime() : Number.NaN;
+  const text = match?.[2]?.trim().replace(/[.\s]+$/, '') ?? '';
+  return Number.isFinite(at) && text ? { at, text } : undefined;
+}
 
 /** What an unanswered reminder says, firmer each time. */
 export function chase(reminder: Pick<Reminder, 'text' | 'level' | 'alarm'>, now: Date): string {
@@ -211,6 +224,12 @@ export class Initiative {
         this.#db
           .prepare('INSERT INTO reminders (base, due, text, alarm, daily, mail) VALUES (?, ?, ?, 0, 0, ?)')
           .run(due, due, `reply to ${sender(mail.from)} about "${mail.subject}"`, mail.id);
+      }
+      // A bill, a delivery, a flight: remembered for him without being asked, and said so once.
+      const dated = await this.#deps.dated?.(mail).catch(() => undefined);
+      if (dated && dated.at > now.getTime() && dated.at - now.getTime() < 90 * 24 * 60 * MINUTE) {
+        this.#db.prepare('INSERT INTO reminders (base, due, text, alarm, daily) VALUES (?, ?, ?, 0, 0)').run(dated.at, dated.at, dated.text);
+        this.say({ key: `dated ${mail.id}`, kind: 'report', text: `Sir, an email from ${sender(mail.from)} had a date in it, so I have set a reminder: ${dated.text}, for ${when.format(dated.at)}.` });
       }
     }
     this.#set('mailSeen', JSON.stringify([...seen].slice(-500)));

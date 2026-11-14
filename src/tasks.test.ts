@@ -138,3 +138,28 @@ test('a restarted job is told what it had already done, and is dropped after bei
   assert.deepEqual(last.ran, [], 'not started a fourth time');
   assert.match(await last.tool('task_results').run({}), /Dropped: it was cut short three times/);
 });
+
+test('a watch looks every few minutes, tells him once when it happens, and gives up when its time runs out', async () => {
+  const looked: string[] = [];
+  let finished = false;
+  const { tasks, reports, tool, at } = await setup('2026-11-12T10:00', { check: async (condition) => (looked.push(condition), finished ? 'Sir, the download has finished.' : undefined) });
+  assert.match(await tool('watch_for').run({ condition: 'the download has finished', hours: 2 }), /Watch 1 set: looking every 5 minutes, for up to 2 hours/);
+  await tool('watch_for').run({ condition: 'the build is green', every_minutes: 30, hours: 1 });
+  tasks.tick();
+  tasks.tick();
+  await tasks.idle();
+  assert.deepEqual(looked, ['the download has finished', 'the build is green'], 'one look each, not one a tick');
+  at('2026-11-12T10:05');
+  finished = true;
+  tasks.tick();
+  await tasks.idle();
+  assert.deepEqual(reports, ['Sir, the download has finished.']);
+  assert.match(await tool('watching').run({}), /^\[2\] every 30 min, until Thu 12 Nov, 11:00: the build is green$/);
+  finished = false;
+  at('2026-11-12T11:01');
+  tasks.tick();
+  await tasks.idle();
+  assert.deepEqual(reports.slice(1), ['Sir, I have stopped watching for this, as it has not happened: the build is green.']);
+  assert.equal(await tool('watching').run({}), 'Nothing is being watched for.');
+  await assert.rejects(tool('stop_watching').run({ id: 9 }), /no watch 9/);
+});

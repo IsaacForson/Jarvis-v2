@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { integer, text, type Tool } from './tools/types.ts';
 
 type Scheduled = { id: number; task: string; time: string; days: string; last: number };
+type Watcher = { id: number; condition: string; every: number; next: number; expires: number };
 type Job = { id: number; task: string; created: number; finished: number | null; result: string | null; scheduled: number | null; steps: string; restarts: number };
 
 export type TaskDeps = {
@@ -11,6 +12,11 @@ export type TaskDeps = {
    * carried out before a restart; `onStep` is called after each new one.
    */
   runJob(task: string, done: string[], onStep: (step: string) => void): Promise<string>;
+  /**
+   * Looks, once, whether something he asked to be told about has happened ("the download has finished").
+   * Returns the sentence to tell him, or undefined if it has not happened yet.
+   */
+  check?(condition: string): Promise<string | undefined>;
   /** Says the outcome when Jarvis is free. */
   report(text: string, note: string): void;
   now?: () => Date;
@@ -73,6 +79,8 @@ export class Tasks {
   readonly #db: DatabaseSync;
   readonly #now: () => Date;
   #chain: Promise<void> = Promise.resolve();
+  /** Watchers with a look already waiting its turn, so slow looks do not pile up. */
+  #looking = new Set<number>();
 
   constructor(deps: TaskDeps) {
     this.#deps = deps;
@@ -80,6 +88,7 @@ export class Tasks {
     this.#db = new DatabaseSync(deps.dbPath);
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS scheduled (id INTEGER PRIMARY KEY, task TEXT NOT NULL, time TEXT NOT NULL, days TEXT NOT NULL, last INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS watchers (id INTEGER PRIMARY KEY, condition TEXT NOT NULL, every INTEGER NOT NULL, next INTEGER NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, task TEXT NOT NULL, created INTEGER NOT NULL, finished INTEGER, result TEXT, scheduled INTEGER);`);
     // Added later: what a job has done so far, and how often a restart has cut it short.
     const columns = (this.#db.prepare('PRAGMA table_info(jobs)').all() as { name: string }[]).map((column) => column.name);
@@ -144,6 +153,38 @@ export class Tasks {
         this.start(schedule.task, schedule.id);
       }
     }
+    this.#watch(now.getTime());
+  }
+
+  /** Looks at each watched thing that is due; tells him once when it has happened, or when the watch runs out. */
+  #watch(now: number): void {
+    const { check, report } = this.#deps;
+    if (!check) return;
+    for (const watcher of this.#db.prepare('SELECT * FROM watchers WHERE next <= ?').all(now) as Watcher[]) {
+      if (this.#looking.has(watcher.id)) continue;
+      const stop = () => this.#db.prepare('DELETE FROM watchers WHERE id = ?').run(watcher.id);
+      if (watcher.expires <= now) {
+        stop();
+        report(`Sir, I have stopped watching for this, as it has not happened: ${watcher.condition}.`, `This was watch ${watcher.id}`);
+        continue;
+      }
+      this.#db.prepare('UPDATE watchers SET next = ? WHERE id = ?').run(now + watcher.every * MINUTE, watcher.id);
+      this.#looking.add(watcher.id);
+      this.#chain = this.#chain.then(async () => {
+        try {
+          const news = await check(watcher.condition);
+          // It may have been stopped while this look was under way.
+          if (news && this.#db.prepare('SELECT 1 FROM watchers WHERE id = ?').get(watcher.id)) {
+            stop();
+            report(news, `This was watch ${watcher.id}: ${watcher.condition}`);
+          }
+        } catch (error) {
+          console.error('[jarvis] a watch could not look:', error instanceof Error ? error.message : error); // it looks again next time
+        } finally {
+          this.#looking.delete(watcher.id);
+        }
+      });
+    }
   }
 
   /** When the scheduled tasks are next due, for waking the Mac in time. */
@@ -207,6 +248,46 @@ export class Tasks {
           const id = integer(args, 'id', { min: 1, max: Number.MAX_SAFE_INTEGER, fallback: 0 });
           if (this.#db.prepare('DELETE FROM scheduled WHERE id = ?').run(id).changes === 0) throw new Error(`There is no scheduled task ${id}.`);
           return `Scheduled task ${id} will not run again.`;
+        },
+      },
+      {
+        name: 'watch_for',
+        description:
+          'Watch for something and tell him once when it has happened, e.g. "the download in Safari has finished", "the build on the Jarvis repo is green", "Dana has replied to my email", "the price on this page is under 500". Describe exactly what to look for and where. You look every few minutes in the background; say so and carry on.',
+        parameters: {
+          type: 'object',
+          properties: {
+            condition: { type: 'string', description: 'What must have happened, and where to look, in full' },
+            every_minutes: { type: 'integer', description: 'How often to look (default 5)' },
+            hours: { type: 'integer', description: 'Give up after this many hours (default 24)' },
+          },
+          required: ['condition'],
+        },
+        run: async (args) => {
+          const every = integer(args, 'every_minutes', { min: 1, max: 24 * 60, fallback: 5 });
+          const hours = integer(args, 'hours', { min: 1, max: 24 * 7, fallback: 24 });
+          const now = this.#now().getTime();
+          const { lastInsertRowid } = this.#db.prepare('INSERT INTO watchers (condition, every, next, expires) VALUES (?, ?, ?, ?)').run(text(args, 'condition').trim(), every, now, now + hours * 60 * MINUTE);
+          return `Watch ${lastInsertRowid} set: looking every ${every} minute${every === 1 ? '' : 's'}, for up to ${hours} hour${hours === 1 ? '' : 's'}. He will be told when it happens.`;
+        },
+      },
+      {
+        name: 'watching',
+        description: 'List the things being watched for, with their numbers.',
+        parameters: { type: 'object', properties: {} },
+        run: async () => {
+          const all = this.#db.prepare('SELECT * FROM watchers ORDER BY id').all() as Watcher[];
+          return all.length ? all.map((one) => `[${one.id}] every ${one.every} min, until ${when.format(one.expires)}: ${one.condition}`).join('\n') : 'Nothing is being watched for.';
+        },
+      },
+      {
+        name: 'stop_watching',
+        description: 'Stop watching for something, by its number.',
+        parameters: { type: 'object', properties: { id: { type: 'integer' } }, required: ['id'] },
+        run: async (args) => {
+          const id = integer(args, 'id', { min: 1, max: Number.MAX_SAFE_INTEGER, fallback: 0 });
+          if (this.#db.prepare('DELETE FROM watchers WHERE id = ?').run(id).changes === 0) throw new Error(`There is no watch ${id}.`);
+          return `Watch ${id} is stopped.`;
         },
       },
       {

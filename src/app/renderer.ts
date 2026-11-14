@@ -127,12 +127,37 @@ jarvis.onMessage((message: ToRenderer) => {
     case 'toggle-mic':
       void setMuted(!muted);
       break;
+    case 'camera-look':
+      void look(message.id);
+      break;
     case 'hand-control':
       if (message.on) void hands.start();
       else hands.stop();
       break;
   }
 });
+
+// --- Eyes: one picture from the webcam when Jarvis is asked to look. The camera is on for about a second. ---
+const look = async (id: number) => {
+  let stream: MediaStream | undefined;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+    const video = document.createElement('video');
+    video.muted = true;
+    video.srcObject = stream;
+    await video.play();
+    await new Promise((resolve) => setTimeout(resolve, 800)); // the first frames are dark while the camera sets its exposure
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d')!.drawImage(video, 0, 0);
+    jarvis.send({ type: 'camera-frame', id, jpeg: canvas.toDataURL('image/jpeg', 0.85).split(',')[1]! });
+  } catch (error) {
+    jarvis.send({ type: 'camera-frame', id, error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    stream?.getTracks().forEach((track) => track.stop());
+  }
+};
 
 // --- Hand control: gestures go to the main process, which moves the window. ---
 let handStatus = '';

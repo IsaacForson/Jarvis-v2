@@ -35,7 +35,7 @@ export function createTools(options: {
   const web = webTools({ profileDir: options.browserProfileDir });
   const helper = (args: string[]) => exec(options.accessibilityHelper, args, { timeoutMs: 20_000 });
   return {
-    tools: [...macTools, ...installTools(), ...fileTools(undefined, (path) => exec(options.accessibilityHelper, ['pdftext', path], { timeoutMs: 60_000 })), ...terminalTools, ...screenTools({ describe: options.describeImage, locate: options.locateOnScreen, helper }), calendar.tool, ...mailTools, ...messageTools({ helper }), weatherTool, ...everydayTools({ helper }), ...web.tools, ...appTools(helper)],
+    tools: [...macTools, ...installTools(), ...fileTools(undefined, (path) => exec(options.accessibilityHelper, ['pdftext', path], { timeoutMs: 60_000 })), ...terminalTools, ...screenTools({ describe: options.describeImage, locate: options.locateOnScreen, helper }), calendar.tool, calendar.addTool, ...mailTools, ...messageTools({ helper }), weatherTool, ...everydayTools({ helper }), ...web.tools, ...appTools(helper)],
     jobWebTools: web.jobTools,
     refresh: calendar.refresh,
     upcoming: calendar.upcoming,

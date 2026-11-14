@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { encodeWav, resample } from './wav.ts';
+import { decodeWav, encodeWav, resample } from './wav.ts';
 
 test('encodeWav writes a valid 16-bit mono header and clamps loud samples', () => {
   const wav = encodeWav(new Float32Array([0, 0.5, -1, 2]), 16000);
@@ -19,4 +19,11 @@ test('resample changes the length by the rate ratio and keeps the shape', () => 
   assert.deepEqual([...out], [0, 4.5, 9, 13.5]);
   const same = new Float32Array([1, 2]);
   assert.equal(resample(same, 16000, 16000), same);
+});
+
+test('decodeWav reads back what encodeWav wrote, and refuses what is not a WAV', () => {
+  const { samples, sampleRate } = decodeWav(encodeWav(new Float32Array([0, 0.5, -0.5, 1]), 24000));
+  assert.equal(sampleRate, 24000);
+  assert.deepEqual([...samples].map((value) => Math.round(value * 100) / 100), [0, 0.5, -0.5, 1]);
+  assert.throws(() => decodeWav(new Uint8Array(60)), /Not a WAV/);
 });

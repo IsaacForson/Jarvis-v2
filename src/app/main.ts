@@ -142,6 +142,12 @@ app.whenReady().then(async () => {
   engine.on('message', (message: ToRenderer) => {
     if (message.type === 'helper') return void (helperPid = message.pid);
     if (message.type === 'hand-control') return void setHands(message.on); // asked for by voice
+    if (message.type === 'camera-look') {
+      // macOS must allow the camera first; the window then takes the one picture.
+      const { id } = message;
+      const allowed = process.platform !== 'darwin' || Boolean(fakeCamera) || systemPreferences.askForMediaAccess('camera');
+      return void Promise.resolve(allowed).then((yes) => (yes ? toRenderer(message) : engine.postMessage({ type: 'camera-frame', id, error: 'macOS has not allowed Jarvis to use the camera' } satisfies ToEngine)));
+    }
     console.log(`[jarvis] ${describe(message)}`);
     if (message.type === 'tool' || message.type === 'error' || message.type === 'fatal') keep(describe(message));
     toRenderer(message);
@@ -168,7 +174,10 @@ app.whenReady().then(async () => {
   // The window may only send the messages it has a reason to send, rebuilt here field by field.
   ipcMain.on('jarvis', (_event, message: ToEngine | ToMain) => {
     if (message?.type === 'gesture' && message.gesture && typeof message.gesture === 'object') gesture(message.gesture);
-    else if (message?.type === 'hand-status') {
+    else if (message?.type === 'camera-frame' && typeof message.id === 'number') {
+      const jpeg = typeof message.jpeg === 'string' && message.jpeg.length < 8_000_000 ? message.jpeg : undefined;
+      engine.postMessage({ type: 'camera-frame', id: message.id, ...(jpeg ? { jpeg } : { error: typeof message.error === 'string' ? message.error.slice(0, 300) : 'the camera gave no picture' }) } satisfies ToEngine);
+    } else if (message?.type === 'hand-status') {
       if (message.status === 'off' || message.status === 'error') handsOn = false;
       if (['starting', 'watching', 'off', 'error'].includes(message.status)) console.log(`[jarvis] hand control: ${message.status}${message.detail ? ` (${message.detail})` : ''}`);
     }

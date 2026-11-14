@@ -1,6 +1,6 @@
 import { osascript } from './exec.ts';
 import { expandRecurrence } from './rrule.ts';
-import { integer, type Tool } from './types.ts';
+import { integer, text, type Tool } from './types.ts';
 
 type RawEvent = { calendar: string; title: string; start: string; end: string; allDay: boolean; rule: string | null; place: string | null };
 
@@ -23,6 +23,18 @@ const SCRIPT = (days: number) => `
     wanted.forEach((keep, i) => keep && out.push({ calendar: name, title: titles[i], start: starts[i].toISOString(), end: ends[i].toISOString(), allDay: allDay[i], rule: rules[i] || null, place: places[i] || null }));
   });
   JSON.stringify(out);`;
+
+// Adds one event. The values arrive as JSON, never pasted into the script as code.
+const ADD = (event: { title: string; start: number; end: number; place: string; calendar: string }) => `
+  const wanted = ${JSON.stringify(event)};
+  const Calendar = Application('Calendar');
+  const calendars = Calendar.calendars();
+  const target = (wanted.calendar && calendars.find((one) => one.name().toLowerCase() === wanted.calendar.toLowerCase())) || calendars.find((one) => one.writable());
+  if (!target) throw new Error('No calendar can be written to');
+  const event = Calendar.Event({ summary: wanted.title, startDate: new Date(wanted.start), endDate: new Date(wanted.end), location: wanted.place });
+  target.events.push(event);
+  target.name();`;
+const when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 
 export type CalendarEvent = { calendar: string; title: string; start: Date; end: Date; allDay: boolean; place?: string };
 
@@ -64,7 +76,7 @@ const fromCalendarApp: Fetch = async () => JSON.parse(await osascript(SCRIPT(WIN
  * 20 to 60 s to answer on this Mac, far too long for a spoken reply, so the next month is read in the
  * background and questions are answered from that copy while it is under ten minutes old.
  */
-export function createCalendar(fetch: Fetch = fromCalendarApp, now: () => number = Date.now) {
+export function createCalendar(fetch: Fetch = fromCalendarApp, now: () => number = Date.now, add: (script: string) => Promise<string> = (script) => osascript(script, { javascript: true, timeoutMs: 60_000 })) {
   let copy: { at: number; raw: RawEvent[] } | undefined;
   let loading: Promise<RawEvent[]> | undefined;
   const refresh = (): Promise<RawEvent[]> =>
@@ -95,5 +107,31 @@ export function createCalendar(fetch: Fetch = fromCalendarApp, now: () => number
     const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
     return eventsInWindow(copy?.raw ?? (await refresh()), start, end);
   };
-  return { tool, refresh, upcoming };
+  const addTool: Tool = {
+    name: 'add_calendar_event',
+    description: "Put an event in his calendar (the Mac's Calendar app, which syncs to his accounts): a meeting, an appointment, a block of time.",
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        start: { type: 'string', description: 'Local date and time, YYYY-MM-DDTHH:MM' },
+        minutes: { type: 'integer', description: 'How long it lasts (default 60)' },
+        place: { type: 'string' },
+        calendar: { type: 'string', description: 'Which calendar, by name; default his first writable one' },
+      },
+      required: ['title', 'start'],
+    },
+    approval: (args) => `add ${text(args, 'title')} to your calendar${typeof args.start === 'string' && Number.isFinite(new Date(args.start).getTime()) ? ` on ${when.format(new Date(args.start))}` : ''}`,
+    slow: true,
+    run: async (args) => {
+      const start = new Date(text(args, 'start')).getTime();
+      if (!Number.isFinite(start)) throw new Error('"start" must be a date and time, YYYY-MM-DDTHH:MM');
+      const minutes = integer(args, 'minutes', { min: 5, max: 24 * 60, fallback: 60 });
+      const name = await add(ADD({ title: text(args, 'title').trim(), start, end: start + minutes * 60_000, place: typeof args.place === 'string' ? args.place : '', calendar: typeof args.calendar === 'string' ? args.calendar : '' }));
+      copy = undefined; // the kept copy no longer shows everything
+      void refresh().catch(() => {});
+      return `Added to the ${name} calendar: ${text(args, 'title').trim()}, ${when.format(start)}, for ${minutes} minutes.`;
+    },
+  };
+  return { tool, addTool, refresh, upcoming };
 }

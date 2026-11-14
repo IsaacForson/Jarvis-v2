@@ -58,3 +58,13 @@ test('two refreshes at once share one read of the app', async () => {
   await Promise.all([calendar.refresh(), calendar.refresh()]);
   assert.equal(reads, 1);
 });
+
+test('an event is added with its values passed as data, and asked about by name and time', async () => {
+  const scripts: string[] = [];
+  const calendar = createCalendar(async () => [], () => new Date('2026-11-12T09:00').getTime(), async (script) => (scripts.push(script), 'Work'));
+  assert.equal(calendar.addTool.approval?.({ title: 'Dentist', start: '2026-11-13T15:00' }), 'add Dentist to your calendar on Fri 13 Nov, 15:00');
+  assert.equal(await calendar.addTool.run({ title: 'Dentist"); evil(', start: '2026-11-13T15:00', minutes: 30 }), 'Added to the Work calendar: Dentist"); evil(, Fri 13 Nov, 15:00, for 30 minutes.');
+  assert.match(scripts[0]!, /"title":"Dentist\\"\); evil\("/, 'a quote in the title cannot end the string and run as code');
+  assert.match(scripts[0]!, new RegExp(`"end":${new Date('2026-11-13T15:30').getTime()}`));
+  await assert.rejects(calendar.addTool.run({ title: 'x', start: 'tomorrow' }), /must be a date and time/);
+});

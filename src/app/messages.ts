@@ -13,6 +13,8 @@ export type ToEngine =
   | { type: 'selftest'; question?: string; /** Spoken back when Jarvis asks a yes-or-no question. */ answer?: string; /** What Jarvis says that the answer goes to; default a yes-or-no question. */ answerTo?: string }
   /** From the right-click menu: the way back in if the voice lock stops recognising its owner. */
   | { type: 'forget-voice' }
+  /** One picture from the webcam, as base64 JPEG, in answer to a `camera-look`; or why there is none. */
+  | { type: 'camera-frame'; id: number; jpeg?: string; error?: string }
   /** The Mac woke from sleep. */
   | { type: 'resume' }
   | { type: 'shutdown' };
@@ -27,6 +29,8 @@ export type ToRenderer =
   | { type: 'toggle-mic' }
   /** Hand control (the webcam) switched on or off, by voice, the menu or the shortcut. */
   | { type: 'hand-control'; on: boolean }
+  /** The engine asks for one picture from the webcam ("what am I holding?"). */
+  | { type: 'camera-look'; id: number }
   | { type: 'stop' };
 
 /** Renderer to main process only. */
@@ -35,6 +39,7 @@ export type ToMain =
   | { type: 'frame-rate'; framesPerSecond: number }
   /** A hand gesture seen by the webcam. */
   | { type: 'gesture'; gesture: Gesture }
+  | Extract<ToEngine, { type: 'camera-frame' }>
   /** Hand control's state, for the menu and the log. */
   | { type: 'hand-status'; status: HandStatus; detail?: string };
 

@@ -34,3 +34,25 @@ export function resample(samples: Float32Array, fromRate: number, toRate: number
   }
   return out;
 }
+
+/** Reads a 16-bit mono WAV file (as macOS's `say` writes it) back into samples and their rate. */
+export function decodeWav(bytes: Uint8Array): { samples: Float32Array; sampleRate: number } {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tag = (offset: number) => String.fromCharCode(...bytes.subarray(offset, offset + 4));
+  if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') throw new Error('Not a WAV file');
+  let sampleRate = 0;
+  // Chunks follow the 12-byte header: a name, a length, then that many bytes (padded to an even count).
+  for (let offset = 12; offset + 8 <= bytes.length; ) {
+    const size = view.getUint32(offset + 4, true);
+    if (tag(offset) === 'fmt ') sampleRate = view.getUint32(offset + 12, true);
+    if (tag(offset) === 'data') {
+      const count = Math.floor(Math.min(size, bytes.length - offset - 8) / 2);
+      const samples = new Float32Array(count);
+      for (let index = 0; index < count; index++) samples[index] = view.getInt16(offset + 8 + index * 2, true) / 32768;
+      if (!sampleRate) break;
+      return { samples, sampleRate };
+    }
+    offset += 8 + size + (size % 2);
+  }
+  throw new Error('The WAV file holds no sound');
+}

@@ -5,7 +5,7 @@ import { exec } from './exec.ts';
 import { clip, text, type Tool } from './types.ts';
 
 // File contents are sent to the model in the cloud, so secrets must never be readable.
-const SECRET = /(^|\/)(\.env(\..*)?|\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc|\.docker|Keychains|voiceprint\.json)(\/|$)|\.(pem|key|p12|pfx|keychain|keychain-db)$/i;
+export const SECRET = /(^|\/)(\.env(\..*)?|\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc|\.docker|Keychains|voiceprint\.json)(\/|$)|\.(pem|key|p12|pfx|keychain|keychain-db)$/i;
 
 /**
  * Turns a path the model wrote into a real path Jarvis may touch: inside the home folder (links
@@ -69,6 +69,19 @@ async function keepOldVersion(path: string, trash: (path: string) => Promise<unk
   return true;
 }
 
+/** The whole text of a document or text file: PDF (through `pdfText`), Word and other rich formats, or plain text. */
+export async function documentText(path: string, pdfText?: (path: string) => Promise<string>): Promise<string> {
+  if (extname(path).toLowerCase() === '.pdf') {
+    if (!pdfText) throw new Error('PDFs cannot be read here');
+    return (await pdfText(path)).replace(/\n{3,}/g, '\n\n').trim();
+  }
+  if (isRich(path)) return exec('textutil', ['-convert', 'txt', '-stdout', path]);
+  if ((await stat(path)).size > 1_000_000) throw new Error('That file is larger than 1 MB, too big to read aloud or summarise');
+  const content = await readFile(path, 'utf8');
+  if (content.includes('\0')) throw new Error('That is not a text file');
+  return content;
+}
+
 /** `pdfText` turns a PDF into its text (the native helper does it). */
 export function fileTools(
   home: string = homedir(),
@@ -102,15 +115,10 @@ export function fileTools(
       parameters: { type: 'object', properties: { path: { type: 'string' }, html: { type: 'boolean', description: 'Word or RTF documents only: read as HTML, keeping bold, headings and lists' } }, required: ['path'] },
       run: async (args) => {
         const path = await safePath(text(args, 'path'), home);
-        if (extname(path).toLowerCase() === '.pdf') {
-          if (!pdfText) throw new Error('PDFs cannot be read here');
-          return clip((await pdfText(path)).replace(/\n{3,}/g, '\n\n').trim() || 'The PDF has no text; it may be scanned images. Look at it with read_screen instead.', 12_000);
-        }
-        if (isRich(path)) return clip(await exec('textutil', ['-convert', args.html === true ? 'html' : 'txt', '-stdout', path]), 12_000);
-        if ((await stat(path)).size > 1_000_000) throw new Error('That file is larger than 1 MB, too big to read aloud or summarise');
-        const content = await readFile(path, 'utf8');
-        if (content.includes('\0')) throw new Error('That is not a text file');
-        return clip(content);
+        if (isRich(path) && args.html === true) return clip(await exec('textutil', ['-convert', 'html', '-stdout', path]), 12_000);
+        const content = await documentText(path, pdfText);
+        if (extname(path).toLowerCase() === '.pdf') return clip(content || 'The PDF has no text; it may be scanned images. Look at it with read_screen instead.', 12_000);
+        return clip(content, isRich(path) ? 12_000 : undefined);
       },
     },
     {

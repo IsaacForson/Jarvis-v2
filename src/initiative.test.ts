@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { briefingTime, chase, Initiative, type InitiativeDeps, type Mail } from './initiative.ts';
+import { briefingTime, chase, Initiative, parseDated, type InitiativeDeps, type Mail } from './initiative.ts';
 
 const dirs: string[] = [];
 after(() => Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }))));
@@ -278,4 +278,20 @@ test('the evening recap is given once, after its time, and only while he is at t
   at('2026-11-13T21:30');
   await initiative.tick();
   assert.equal(recaps().length, 2, 'and again the next evening');
+});
+
+test('a dated email becomes a reminder unasked, said once; a date already past or far off does not', async () => {
+  const mail: Mail[] = [
+    { id: 1, from: 'ECG <bills@ecg.com>', subject: 'Your bill is due', received: '2026-11-12T09:55:00' },
+    { id: 2, from: 'Shop <news@shop.com>', subject: 'Sale ends soon', received: '2026-11-12T09:56:00' },
+    { id: 3, from: 'Old <old@x.com>', subject: 'Yesterday', received: '2026-11-12T09:57:00' },
+  ];
+  const answers: Record<number, string> = { 1: '2026-11-19T09:00 | pay the electricity bill.', 2: 'NONE', 3: '2026-11-11T09:00 | too late' };
+  const { initiative, said, tool } = await setup('2026-11-12T10:00', { unreadMail: async () => mail, isUrgent: async () => false, dated: async (one) => parseDated(answers[one.id]!) });
+  await initiative.tick();
+  await initiative.tick();
+  assert.deepEqual(said, ['Sir, an email from ECG had a date in it, so I have set a reminder: pay the electricity bill, for Thu 19 Nov, 09:00.']);
+  assert.match(await tool('reminders').run({}), /^\[1\] Thu 19 Nov, 09:00: pay the electricity bill$/);
+  assert.equal(parseDated('NONE'), undefined);
+  assert.equal(parseDated('2026-13-45T09:00 | nonsense date'), undefined);
 });

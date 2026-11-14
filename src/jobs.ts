@@ -18,6 +18,8 @@ export type JobDeps = {
   done?: string[];
   /** Called after each action is carried out, so it can be recorded. */
   onStep?(step: string): void;
+  /** How many rounds of looking and acting the job may take; default 80. */
+  maxRounds?: number;
   now?: () => Date;
 };
 
@@ -35,7 +37,7 @@ export async function runJob(task: string, deps: JobDeps): Promise<string> {
     ? `\n\nThis task was started earlier and cut short by a restart. These actions were already carried out, in order:\n${deps.done.map((step) => `- ${step}`).join('\n')}\nDo not repeat them. Look at how things stand now and carry on from there.`
     : '';
   const messages: Message[] = [{ role: 'system', content: `${SYSTEM}\nIt is now ${clock}.` }, { role: 'user', content: `${task}${before}` }];
-  for (let round = 0; round < MAX_ROUNDS; round++) {
+  for (let round = 0; round < (deps.maxRounds ?? MAX_ROUNDS); round++) {
     let reply = '';
     const stream = deps.chat({ ...deps.model, maxTokens: 4000, messages, tools: definitions });
     let step = await stream.next();

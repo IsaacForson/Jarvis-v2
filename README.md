@@ -28,6 +28,22 @@ answering; "Jarvis, end the meeting" saves a summary, decisions, action items an
 An evening recap is given at `JARVIS_RECAP_TIME` (default 21:00) if you are at the Mac: what got done, what is open,
 what is first tomorrow.
 
+More that Jarvis does on its own and knows:
+- Watching: "tell me when the download finishes", "when Dana replies", "when this price drops below 500". It looks every
+  few minutes in the background (five by default, for up to a day) and tells you once.
+- Routines: "when I say work mode, open Cursor and Slack and set the volume to 20". Saying the name runs it.
+- Email with a date in it (a bill due, a delivery, a flight, an appointment) becomes a reminder without being asked.
+- Document search: "find the contract where we agreed 650" searches inside the PDFs, Word files and notes in Documents
+  and on the Desktop, by meaning. The index is built on this Mac, a few files at a time, in `library.db`.
+- "Put lunch with Dana in my calendar for Friday at one" adds the event through the Calendar app.
+- Developer mode: "run the tests on Jarvis", "what changed in Halo since yesterday", using the git projects under
+  `~/Desktop/PROJECTS` (`JARVIS_PROJECTS_DIR` changes the folder). "What is waiting for me on GitHub?" uses `gh`.
+  Slack and Jira join in when their keys are in `.env`: `SLACK_TOKEN` (a user token with search:read and chat:write),
+  and `JIRA_SITE`, `JIRA_EMAIL` and `JIRA_TOKEN`.
+- Eyes: "what am I holding?" takes one picture with the webcam (on for about a second) and describes it.
+- Languages: "let's speak French" (or Spanish, German, Italian, Portuguese) switches what Jarvis hears and speaks, with
+  a Mac voice; "back to English" returns. The spoken commands (sleep, dictation, meeting notes) stay English.
+
 Two brains: with Groq keys (`GROQ_API_KEYS`, optional), conversation and simple actions (opening apps, volume, weather,
 calendar, email, reminders, memory, screenshots, music keys, shortcuts, the clipboard) are answered by Groq, which starts replying in about half a second.
 Everything else (the web, files, the screen, other apps, long jobs) is handed to the NVIDIA models, which also take over

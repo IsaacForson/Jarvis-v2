@@ -16,6 +16,13 @@ export function commandApproval(command: string): string | undefined {
   return `run the command: ${command.length > 120 ? `${command.slice(0, 120)}, and more` : command}`;
 }
 
+/** Throws for a command Jarvis never runs, asked or not: administrator rights, or reading keys and passwords. */
+export function refuseCommand(command: string): void {
+  // Never administrator rights: there is nobody at a keyboard to type the password, and nothing Jarvis does needs them.
+  if (/(^|[\s;&|(])sudo(\s|$)/.test(command)) throw new Error('Administrator (sudo) commands are not allowed');
+  if (SECRETS.test(command)) throw new Error('That command touches keys or passwords, which I may not read');
+}
+
 export const terminalTools: Tool[] = [
   {
     name: 'run_command',
@@ -26,9 +33,7 @@ export const terminalTools: Tool[] = [
     slow: true,
     run: async (args) => {
       const command = text(args, 'command');
-      // Never administrator rights: there is nobody at a keyboard to type the password, and nothing Jarvis does needs them.
-      if (/(^|[\s;&|(])sudo(\s|$)/.test(command)) throw new Error('Administrator (sudo) commands are not allowed');
-      if (SECRETS.test(command)) throw new Error('That command touches keys or passwords, which I may not read');
+      refuseCommand(command);
       return clip((await exec('/bin/zsh', ['-c', command], { cwd: homedir(), timeoutMs: 60_000 })) || 'Done, with no output.', 4000);
     },
   },
