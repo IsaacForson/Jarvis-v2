@@ -231,7 +231,8 @@ app.whenReady().then(async () => {
     toRenderer({ type: 'stop' });
   });
 
-  app.on('will-quit', () => {
+  const cleanUp = () => {
+    if (quitting) return;
     quitting = true;
     awake.kill();
     globalShortcut.unregisterAll();
@@ -242,8 +243,21 @@ app.whenReady().then(async () => {
     } catch {
       // already gone
     }
+  };
+  // Quit always quits: once a busy window held up Electron's own quit forever (Quit, Command-Q and
+  // even a plain kill did nothing), so after cleaning up, Jarvis leaves on its own two seconds later.
+  app.on('before-quit', () => {
+    cleanUp();
+    setTimeout(() => {
+      console.log('[jarvis] quit was held up; leaving anyway');
+      for (const open of BrowserWindow.getAllWindows()) open.webContents.forcefullyCrashRenderer();
+      app.exit(0);
+      setTimeout(() => process.exit(0), 1000);
+    }, 2000);
   });
+  app.on('will-quit', cleanUp);
   await window.loadFile(join(dist, 'index.html'));
 });
 
-app.on('window-all-closed', () => app.quit());
+// A menu-bar app: closing its windows (the setup window, say) is not quitting; Quit is in the menu.
+app.on('window-all-closed', () => {});
